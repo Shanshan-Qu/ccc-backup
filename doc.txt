@@ -1,0 +1,131 @@
+Azure backup Build Spec for Christchurch City Council.
+ 
+Introduction
+
+This document provides an initial build specification for deploying Azure Backup within Christchurch City Council, covering a variety of workloads. It defines the baseline configuration, security and governance requirements, and operational processes required to implement backup services consistently across environments.
+ 
+Specification
+
+Supported Scenarios
+
+This initial specification focuses on establishing a backup solution for the following workloads:
+•	Azure Files
+•	Non-production Azure Virtual Machines
+•	Production SQL Server Virtual Machines
+Azure Backup also supports additional protection scenarios that may be incorporated in later phases, subject to workload suitability and Council requirements, including:
+•	Azure SQL (PaaS) and Azure SQL Managed Instance via native backup/restore capabilities (not Recovery Services vault-based)
+•	SAP HANA databases on Azure VMs
+•	Azure Blob data protection (operational backup) using Backup vault
+•	Azure Disk Backup for managed disks (snapshot-based) using Backup vault
+•	On-premises workloads backed up to Azure using the Microsoft Azure Recovery Services (MARS) agent, Microsoft Azure Backup Server (MABS), or System Center DPM (where still in use)
+This list is indicative only and will be refined as additional workloads are onboarded and recovery objectives (RPO/RTO) are confirmed.
+
+Deployment Scope
+Recovery Services vaults must be deployed within the same Azure subscription as the resources they protect (for example, Azure Virtual Machines and SQL Server workloads running on Azure VMs).
+All Recovery Services vaults will be deployed into the dedicated resource group rg-rsv-backup-nzn.
+Whilst the vault must be in the same subscription as the targets, the solution will support cross-subscription restoration. Allowing you to restore backups to an alternative subscription, useful for when backup restores are an approach to seed down into non-production environments from production backups.
+
+
+RBAC permissions
+The following Azure RBAC roles are specific to Recovery Services vaults and should be used to delegate backup administration, monitoring, and restore activities.
+
+The Recovery Services Contributor role enables broader management of the Recovery Services vault itself, including configuring settings and managing vault-level resources, while the Backup roles are designed for more focused backup-related tasks such as administering backup jobs, monitoring, and performing restores. In essence, Recovery Services Contributor has a wider scope over the vault’s functionality, whereas Backup roles concentrate on backup operations and data protection.
+Azure RBAC role	Where you use it (typical)	User / Group
+Backup Contributor	Day-to-day backup administration for Recovery Services vaults: configure backup, manage protection, create/modify policies, run on-demand backup jobs, and perform restores (where permitted by resource-level access).	 
+Backup Operator	Operational restore and monitoring role. Use for service desk / operations teams that need to trigger restores, monitor jobs/alerts, and take operational actions, without full administrative control of backup configuration.	 
+Backup Reader	Read-only visibility into backup items, jobs, policies, and health. Use for auditors, application owners, and monitoring/observability teams that need reporting and status without any change rights.	 
+Recovery Services Contributor	Vault-level administration beyond backup operations (for example, manage vault settings/infrastructure features). Use for the platform team responsible for the vault itself. Prefer the least-privilege Backup roles above where possible.	 
+
+
+Monitoring Approach
+This section outlines a recommended approach to monitoring, alerting and observability for Azure Backup using Azure Monitor and Log Analytics, with an emphasis on actionable alerts, consistent reporting, and operational readiness.
+1. Centralise backup telemetry in Log Analytics
+•	Enable Diagnostic settings on each Recovery Services vault to send logs to a Log Analytics workspace (and optionally to a Storage account for long-term log retention, if required by policy).
+•	Ensure Log Analytics retention to match operational needs (e.g., 30–90 days for investigations and trend analysis). Use archived logs / external storage if retention beyond workspace limits is required.
+•	Tag vaults consistently so alerts and workbooks can filter and route notifications appropriately.
+2. Key signals to monitor (aligned to available vault alerts)
+•	All Failed Jobs (Log Analytics): use as the primary operational signal for backup reliability. Track failures by vault, workload type, protected item and error category to identify recurring issues.
+•	Backup Health Events (Platform metrics): use for vault-generated health signals that indicate backup protection/health problems that may not be visible from a single job result alone.
+•	Restore Health Events (Platform metrics): use to detect restore-related health issues and to ensure restore operations are monitored as first-class operational events.
+•	Resource health: monitor the vault resource health state to detect Azure platform incidents affecting the vault.
+•	Cloud Storage Consumed per Backup Item (Log Analytics): track per-item consumption to spot abnormal growth (e.g., workload change, retention change, or unexpected churn).
+•	Trend of total Cloud Storage consumed (Log Analytics): track total vault consumption and growth rate for forecasting and cost control, and to detect sudden spikes.
+•	Administrative operations (Activity Log): monitor vault configuration and control-plane changes (creation/deletion, private endpoint approval, job export, security PIN retrieval, validation operations) for governance and security assurance.
+3. Implement alerting with Azure Monitor (using the available vault alert types)
+•	All Failed Jobs (Log Analytics alert rule): create an alert when failures > 0 in a rolling window (e.g., 15–60 minutes). Use separate rules/severities for Production vs Non-production where possible. Include vault name, protected item, workload type, operation type, and error details in the alert payload.
+•	Cloud Storage Consumed per Backup Item (Log Analytics alert rule): alert on abnormal growth (e.g., % increase day-over-day or crossing a per-item threshold). Use this primarily as a capacity/cost anomaly alert rather than an incident alert.
+•	Trend of total Cloud Storage consumed (Log Analytics alert rule): alert when total consumption crosses defined thresholds (e.g., 70/85/95% of forecast) or when growth rate materially changes (spike detection). Pair this with a monthly capacity report/dashboard.
+•	Resource health (Resource Health alert): alert immediately on health state changes (Degraded/Unavailable) for any production vaults to capture Azure-side incidents impacting backup/restore operations.
+•	Backup Health Events (Metric alert): alert on relevant health event counts/conditions. Use these alerts to complement job-failure alerts and catch “silent” protection issues.
+•	Restore Health Events (Metric alert): alert on restore health event conditions, especially for production vaults, as restores are typically time-critical operations.
+•	All Administrative operations (Activity Log alert): alert on high-risk events, at minimum: Delete Vault, Approve Private Endpoint Connection, Export Jobs, Get Security PIN Info, and other sensitive control-plane actions. Route these alerts to the platform/security operations queue for review.
+•	Use Action Groups for routing (email/SMS/Teams webhook/ITSM). Where possible, route operational failures to the backup operations/on-call group, and route administrative/security events to platform engineering and/or security operations.
+4. Create operational dashboards (workbooks) for visibility
+•	Use Backup Center for day-to-day operational monitoring across vaults (jobs, alerts, protected instances). Treat it as the primary operator UI.
+
+
+Resiliency | Backup Center
+
+Backup Center provides a centralised, cross-vault view of backup operations and health, including protected instances inventory, backup and restore job status, vault-generated alerts/health events, and quick drill-down to the underlying vault and item details. It is designed to give operators a single place to triage issues, validate protection coverage, and track operational trends across subscriptions and resource groups.
+ 
+
+Long Term Retention Options
+
+Azure Backup supports backup of Long-Term Retention points in the archive tier, in addition to Snapshots and the Standard tier.  A virtual machines recovery points are incremental, thus when the vault moves recovery points to archive tier, they are converted to full recovery points (to ensure that all archived RPs are independent and isolated).
+For the different workloads, the supported scenarios can be found here: Azure Backup - Archive tier overview - Azure Backup | Microsoft Learn
+During the proof of value build, the configuration of smart-tiering to archive will be configured on the backup policy to simulate the use of it against production workloads in the future.
+
+
+Initial Backup Policy Schedule
+
+VM Backups Non-Prod
+Policy Name	Frequency	Time & TZ	Retention Backup Day / Time	For x D/M/Y
+CCC-Policy (enhanced)	Daily	0300 NZST	Daily	7D
+			Weekly - Sundays	2W
+			Monthly First Sunday	1M
+
+SQL DB Backups
+Policy Name	Type	Time & TZ	Retention Backup Day / Time	For x D/M/Y
+CCC-SQLPolicy	Full Backup	0700 NZST	Weekly Saturday	4W
+	Differential	Weekdays 1800		14D
+	Log - Disabled			
+				
+
+Azure File Share Backups
+Policy Name	Backup Tier	Time & TZ	Retention Backup Day / Time	For x D/M/Y
+CCC-AzFiles-Policy	Vault-Standard	2200 NZST	Daily	30D
+			Monthly First Sunday	3M
+			Yearly - Jan First Sunday	1Y
+
+
+Connectivity
+
+The recovery vaults will be connected privately to the respective spoke vnet within their subscriptions. Public access will be disabled. For SQL DB backup Connectivity,  the following link details the connectivity pre-reqs.
+For Azure VM Backups, all the required communication and data transfer between storage and Azure Backup service happens within the Azure network without needing to access your virtual network. Meaning that backing up Azure VMs don't require you to allow access to any IPs or FQDNs.
+
+SQL Backup Connectivity requirements - Back up multiple SQL Server VMs from the vault - Azure Backup | Microsoft Learn
+
+
+Vault Name	Subscription	Virtual Network / Subnet	Private Endpoint name
+			
+			
+			
+
+
+Vault Resiliency 
+
+This section defines baseline resiliency and security controls for Recovery Services vaults. The intent is to apply consistent, environment-appropriate settings that improve availability, protect backup data from accidental or malicious deletion, and ensure privileged actions require strong authentication.
+Control / setting	Non-Production (recommended)	Production (recommended)	Notes
+Redundancy (vault storage)	✔ LRS	✔ ZRS	Use LRS to reduce cost in non-prod. Use ZRS for production vaults where supported in the region and for the workload type; otherwise use the highest supported redundancy option for the vault.
+Encryption at rest	✔ Microsoft-managed encryption	✔ Microsoft-managed encryption	Baseline is Microsoft-managed keys. If customer-managed keys (CMK) become a requirement, key management and rotation processes must be defined first.
+Enhanced Soft Delete	✔ Enabled	✔ Enabled	Provides additional protection against accidental/malicious deletion of backup data and backup items. Treat as a mandatory baseline for all vaults.
+Vault immutability	X (optional)	✔ Enabled	Enable vault immutability for production to protect recovery points from deletion/modification for a defined period (ransomware resilience). Use with clear governance because locked settings can be difficult to reverse; document the chosen mode and change process.
+Multi-User Authorization (MUA)	X (optional)	✔ Enabled	Enable MUA on production vaults to require an additional approver for sensitive operations (reduces risk of malicious or accidental destructive changes). Define approver groups and an emergency/break-glass process.
+Privileged operations authentication	X (optional)	✔ MFA via Entra ID (conditional access)	Use Entra ID Privileged Identity Management (PIM) for just-in-time elevation to backup administrative roles (time-bound, approval where required), and enforce MFA via Conditional Access for all privileged access to the Azure portal and vault operations. Prefer eligible assignments over permanent standing access; maintain break-glass accounts outside PIM with strict monitoring.
+
+MFA for critical operations (Security PIN)	X (optional)	✔ Enabled	Require a security PIN for applicable sensitive operations (for example, certain restore actions). Apply to production vaults as a minimum.
+Note: availability and feature support can vary by region and by protected workload type. Final vault settings should be validated during implementation, and exceptions (for example, where ZRS is not available) should be documented and approved.
+
+Processes
+
+We will capture these during the build out process.

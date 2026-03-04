@@ -1,0 +1,35 @@
+# Terraform state & local data
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# Sensitive variable files – never commit real secrets
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Terraform plan output (can contain secrets)
+*.tfplan
+
+# CLI config / credentials
+.terraformrc
+terraform.rc
+
+# Source specification document (binary; kept locally only)
+*.docx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.swp
