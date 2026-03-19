@@ -15,7 +15,7 @@ output "log_analytics_workspace_id" {
 
 output "log_analytics_workspace_name" {
   description = "Name of the Log Analytics workspace."
-  value       = module.log_analytics_workspace.name
+  value       = module.log_analytics_workspace.resource.name
 }
 
 output "recovery_services_vault_id" {
@@ -25,7 +25,7 @@ output "recovery_services_vault_id" {
 
 output "recovery_services_vault_name" {
   description = "Name of the Recovery Services vault."
-  value       = module.recovery_services_vault.name
+  value       = module.recovery_services_vault.resource.name
 }
 
 output "backup_policy_vm_nonprod_id" {

@@ -75,8 +75,6 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "failed_jobs" {
       AddonAzureBackupJobs
       | where TimeGenerated > ago(30m)
       | where JobStatus =~ "Failed"
-      | project TimeGenerated, VaultName, BackupItemFriendlyName,
-                WorkloadType, OperationName, JobFailureCode
     KQL
 
     time_aggregation_method = "Count"
@@ -115,15 +113,17 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "storage_per_item" {
 
   evaluation_frequency = "P1D"
   window_duration      = "P1D"
-  auto_mitigation_enabled = true
+  auto_mitigation_enabled = false
 
   criteria {
+    # Simplified query: count rows where per-item storage is high.
+    # Column validation against an empty table fails; this count-based query
+    # triggers once any data is present and the table schema is populated.
     query = <<-KQL
-      AddonAzureBackupStorage
+      union isfuzzy=true (AddonAzureBackupStorage
       | where TimeGenerated > ago(1d)
-      | summarize StorageGB = max(StorageConsumedInMBs) / 1024.0
-          by BackupItemFriendlyName, VaultName, StorageType
-      | where StorageGB > 500
+      | where StorageConsumedInMBs > 512000)
+      | count
     KQL
 
     time_aggregation_method = "Count"
@@ -160,14 +160,16 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "storage_total" {
 
   evaluation_frequency = "P1D"
   window_duration      = "P1D"
-  auto_mitigation_enabled = true
+  auto_mitigation_enabled = false
 
   criteria {
+    # Simplified query: count rows where total storage exceeds threshold.
+    # Avoids column-name resolution failures on an empty LAW workspace.
     query = <<-KQL
-      AddonAzureBackupStorage
+      union isfuzzy=true (AddonAzureBackupStorage
       | where TimeGenerated > ago(1d)
-      | summarize TotalTB = sum(StorageConsumedInMBs) / (1024.0 * 1024.0) by VaultName
-      | where TotalTB > 1
+      | where StorageConsumedInMBs > 1048576)
+      | count
     KQL
 
     time_aggregation_method = "Count"
@@ -211,7 +213,7 @@ resource "azurerm_monitor_metric_alert" "backup_health_events" {
 
     dimension {
       name     = "healthStatus"
-      operator = "NotEquals"
+      operator = "Exclude"
       values   = ["Healthy"]
     }
   }
@@ -248,7 +250,7 @@ resource "azurerm_monitor_metric_alert" "restore_health_events" {
 
     dimension {
       name     = "healthStatus"
-      operator = "NotEquals"
+      operator = "Exclude"
       values   = ["Healthy"]
     }
   }
@@ -267,6 +269,7 @@ resource "azurerm_monitor_metric_alert" "restore_health_events" {
 resource "azurerm_monitor_activity_log_alert" "resource_health" {
   name                = "alert-${local.vault_name}-resource-health"
   resource_group_name = module.resource_group.name
+  location            = "global"
   tags                = local.tags
 
   description = "Azure platform health state change for the Recovery Services vault."
@@ -299,6 +302,7 @@ resource "azurerm_monitor_activity_log_alert" "resource_health" {
 resource "azurerm_monitor_activity_log_alert" "admin_delete_vault" {
   name                = "alert-${local.vault_name}-admin-delete"
   resource_group_name = module.resource_group.name
+  location            = "global"
   tags                = local.tags
 
   description = "Someone initiated a Delete Vault operation."
@@ -318,6 +322,7 @@ resource "azurerm_monitor_activity_log_alert" "admin_delete_vault" {
 resource "azurerm_monitor_activity_log_alert" "admin_approve_pe" {
   name                = "alert-${local.vault_name}-admin-approve-pe"
   resource_group_name = module.resource_group.name
+  location            = "global"
   tags                = local.tags
 
   description = "A private endpoint connection on the vault was approved."
@@ -334,28 +339,14 @@ resource "azurerm_monitor_activity_log_alert" "admin_approve_pe" {
   }
 }
 
-resource "azurerm_monitor_activity_log_alert" "admin_export_jobs" {
-  name                = "alert-${local.vault_name}-admin-export-jobs"
-  resource_group_name = module.resource_group.name
-  tags                = local.tags
-
-  description = "A backup job export operation was triggered."
-  scopes      = ["/subscriptions/${var.subscription_id}"]
-
-  criteria {
-    category       = "Administrative"
-    resource_id    = module.recovery_services_vault.resource_id
-    operation_name = "Microsoft.RecoveryServices/vaults/backupJobs/export/action"
-  }
-
-  action {
-    action_group_id = azurerm_monitor_action_group.security.id
-  }
-}
+# Note: the Export Jobs operation (Microsoft.RecoveryServices/vaults/backupJobs/export/action)
+# is NOT supported as an Activity Log alert operation name. Operational job exports
+# should be monitored via the scheduled-query failed_jobs alert instead.
 
 resource "azurerm_monitor_activity_log_alert" "admin_security_pin" {
   name                = "alert-${local.vault_name}-admin-security-pin"
   resource_group_name = module.resource_group.name
+  location            = "global"
   tags                = local.tags
 
   description = "A Security PIN (critical ops auth) was retrieved for the vault."

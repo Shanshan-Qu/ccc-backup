@@ -13,10 +13,8 @@ provider "azurerm" {
   subscription_id = var.subscription_id
 
   features {
-    recovery_services {
-      # Prevent accidental vault deletion in test; set to false if you need
-      # to tear down cleanly without first unregistering items.
-      prevent_recovery_services_soft_delete           = false
+    recovery_service {
+      # Allow vault deletion during teardown without unregistering items first.
       vm_backup_stop_protection_and_retain_data_on_destroy = true
     }
     resource_group {

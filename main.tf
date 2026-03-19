@@ -24,7 +24,7 @@ module "log_analytics_workspace" {
   location            = var.location
   resource_group_name = module.resource_group.name
 
-  retention_in_days = var.log_analytics_retention_days
+  log_analytics_workspace_retention_in_days = var.log_analytics_retention_days
 
   tags = local.tags
 
@@ -45,11 +45,14 @@ module "log_analytics_workspace" {
 # ==============================================================
 module "recovery_services_vault" {
   source  = "Azure/avm-res-recoveryservices-vault/azurerm"
-  version = "~> 0.4"
+  version = "~> 0.3"
 
   name                = local.vault_name
   location            = var.location
   resource_group_name = module.resource_group.name
+
+  # ── SKU ─────────────────────────────────────────────────────
+  sku = "Standard"
 
   # ── Storage redundancy ──────────────────────────────────────
   # Non-prod: LRS (reduces cost).  Prod would be ZRS or GRS.
@@ -59,9 +62,8 @@ module "recovery_services_vault" {
   cross_region_restore_enabled = false
 
   # ── Soft Delete ─────────────────────────────────────────────
-  # AlwaysON = Enhanced Soft Delete (cannot be disabled once set).
-  # Spec mandates this as a baseline for all vaults.
-  soft_delete_feature_state = "AlwaysON"
+  # Spec mandates soft delete as a baseline for all vaults.
+  soft_delete_enabled = true
 
   # ── Immutability ────────────────────────────────────────────
   # Unlocked = protection is active but admin can still lock/disable.
@@ -82,15 +84,8 @@ module "recovery_services_vault" {
     to_law = {
       name                  = "diag-${local.vault_name}-law"
       workspace_resource_id = module.log_analytics_workspace.resource_id
-      log_categories = [
-        "CoreAzureBackup",
-        "AddonAzureBackupJobs",
-        "AddonAzureBackupAlerts",
-        "AddonAzureBackupPolicy",
-        "AddonAzureBackupStorage",
-        "AddonAzureBackupProtectedInstance",
-      ]
-      metric_categories = ["Health"]
+      log_groups            = ["allLogs"]
+      metric_categories     = ["AllMetrics"]
     }
   }
 

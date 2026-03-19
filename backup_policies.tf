@@ -18,7 +18,7 @@
 resource "azurerm_backup_policy_vm" "vm_nonprod" {
   name                = "CCC-Policy"
   resource_group_name = module.resource_group.name
-  recovery_vault_name = module.recovery_services_vault.name
+  recovery_vault_name = module.recovery_services_vault.resource.name
 
   # V2 = Enhanced policy (supports sub-hourly backup & tiering)
   policy_type = "V2"
@@ -47,14 +47,6 @@ resource "azurerm_backup_policy_vm" "vm_nonprod" {
     weeks    = ["First"]
   }
 
-  # Smart-tier: automatically recommend recovery points for archive.
-  # Simulates production archive tiering behaviour as per spec.
-  tiering_policy {
-    archived_restore_point {
-      mode = "TierRecommended"
-    }
-  }
-
   depends_on = [module.recovery_services_vault]
 }
 
@@ -70,7 +62,7 @@ resource "azurerm_backup_policy_vm" "vm_nonprod" {
 resource "azurerm_backup_policy_vm_workload" "sql" {
   name                = "CCC-SQLPolicy"
   resource_group_name = module.resource_group.name
-  recovery_vault_name = module.recovery_services_vault.name
+  recovery_vault_name = module.recovery_services_vault.resource.name
 
   workload_type = "SQLDataBase"
 
@@ -89,18 +81,16 @@ resource "azurerm_backup_policy_vm_workload" "sql" {
       time      = "07:00"
     }
 
-    retention_duration {
-      count         = 4
-      duration_type = "Weeks"
-    }
-
-    # Simple retention: 4 weekly copies
-    simple_retention {
-      count = 4
+    # Spec: retain 4 weeks — retention_weekly covers this; simple_retention
+    # is not persisted by the Azure API when retention_weekly is set.
+    retention_weekly {
+      count    = 4
+      weekdays = ["Saturday"]
     }
   }
 
   # Differential backup – Mon–Fri 18:00 NZST, retained 14 days
+  # Note: backup.frequency = Weekly so retention must use simple_retention (days).
   protection_policy {
     policy_type = "Differential"
 
@@ -110,9 +100,8 @@ resource "azurerm_backup_policy_vm_workload" "sql" {
       time      = "18:00"
     }
 
-    retention_duration {
-      count         = 14
-      duration_type = "Days"
+    simple_retention {
+      count = 14  # 14 days
     }
   }
 
@@ -133,7 +122,7 @@ resource "azurerm_backup_policy_vm_workload" "sql" {
 resource "azurerm_backup_policy_file_share" "azfiles" {
   name                = "CCC-AzFiles-Policy"
   resource_group_name = module.resource_group.name
-  recovery_vault_name = module.recovery_services_vault.name
+  recovery_vault_name = module.recovery_services_vault.resource.name
 
   timezone = local.nz_timezone
 

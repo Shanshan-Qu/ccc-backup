@@ -5,7 +5,7 @@
 # ==============================================================
 
 # ── Core ────────────────────────────────────────────────────
-subscription_id = "TODO - your Azure subscription ID"
+subscription_id = "ee118ff5-df4c-4870-8684-84953408d2ac"
 location        = "newzealandnorth"
 environment     = "test"
 workload        = "backup"

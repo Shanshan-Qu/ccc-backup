@@ -78,7 +78,8 @@ locals {
     "pe-${local.vault_name}" = {
       name                            = "pe-${local.vault_name}"
       subnet_resource_id              = var.private_endpoint_subnet_id
-      private_dns_zone_resource_ids   = var.private_dns_zone_ids
+      subresource_name                = "AzureBackup"
+      private_dns_zone_resource_ids   = toset(var.private_dns_zone_ids)
       private_service_connection_name = "psc-${local.vault_name}"
     }
   } : {}
