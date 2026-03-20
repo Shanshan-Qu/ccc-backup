@@ -3,19 +3,19 @@
 #
 # Subscription constraint notes:
 #
-#   VM BACKUP:    All VM SKUs return 'NotAvailableForSubscription' in
-#                 New Zealand North for this sandbox. Request quota via:
+#   VM BACKUP:    All VM SKUs are reported as 'NotAvailableForSubscription'
+#                 by the Compute SKUs API in New Zealand North for this sandbox.
+#                 Standard_D2as_v6 (AMD Dasv6 family) - Intel Dsv6 unavailable in NZN.
+#                 availability.  If this fails, request quota via:
 #                 Azure Portal → Subscriptions → Usage + Quotas.
 #
-#   AZFILES BACKUP: The subscription policy 'deny-storage-sharedkey-access'
-#                 enforces allowSharedKeyAccess=false.  Azure Backup for
-#                 Azure Files requires allowSharedKeyAccess=true at the
-#                 storage account level (confirmed by the error:
-#                 "Storage account does not support key based authentication
-#                 required for Azure Backup integration").
-#                 Resolution: request a policy exception for backup storage
-#                 accounts, or wait for Azure Backup to support MSI-based
-#                 auth for file share backup.
+#   AZFILES BACKUP: Policy 'StorageAccount_DisableLocalAuth_Modify' (display name:
+#                 "SFI-ID4.2.1 Storage Accounts - Safe Secrets Standard") in the
+#                 MCAPSGovDeployPolicies initiative actively sets
+#                 allowSharedKeyAccess=false on all storage accounts.
+#                 Azure Backup for Azure Files requires allowSharedKeyAccess=true.
+#                 Resolution: request a policy exemption scoped to this storage
+#                 account from the MCAPSGovDeployPolicies assignment owner.
 #
 # The networking layer and storage account below are pre-provisioned so that
 # both VM and file share backup can be enabled instantly once the above
@@ -129,3 +129,92 @@ resource "azurerm_storage_share" "test" {
   storage_account_id = azurerm_storage_account.files.id
   quota              = 5
 }
+
+# ==============================================================
+# Non-Production Linux VM Workload
+# NZN CAPACITY ISSUE: All general-purpose VM sizes consistently
+# return "SkuNotAvailable / Capacity Restrictions" in NZN for this
+# subscription, regardless of family or zone. Sizes tried:
+#   - Standard_D2s_v6  → not available in region (Intel Dsv6 absent in NZN)
+#   - Standard_D2as_v6 → Capacity Restriction (zone 1/2)
+#   - Standard_B2ms    → Capacity Restriction
+#   - Standard_D2s_v5  → Capacity Restriction (zone 1)
+#   - Standard_E2s_v6  → Capacity Restriction (zone 2)
+# The VirtualMachine_SKU_Deny policy only blocks HPC/M/GPU families
+# so policy is NOT the cause. This is a regional capacity shortage.
+# ACTION REQUIRED: Request a VM capacity reservation for NZN via
+# the MCAP governance team (https://aka.ms/fdpowiki), or deploy in
+# an alternate region. NIC and TLS key are deployed and waiting.
+# ==============================================================
+
+resource "azurerm_network_interface" "vm" {
+  name                = "nic-ccc-backup-${local.region_code}-${var.environment}-01"
+  location            = var.location
+  resource_group_name = module.resource_group.name
+  tags                = local.tags
+
+  ip_configuration {
+    name                          = "internal"
+    subnet_id                     = azurerm_subnet.workload.id
+    private_ip_address_allocation = "Dynamic"
+  }
+}
+
+resource "tls_private_key" "vm" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+# ----- VM commented out: NZN capacity restrictions block all sizes ----
+# Uncomment and re-run `terraform apply` once capacity is available.
+# Last attempted size: Standard_E2s_v6 (zone 2)
+#
+# resource "azurerm_linux_virtual_machine" "nonprod" {
+#   name                            = "vm-ccc-backup-${local.region_code}-${var.environment}-01"
+#   location                        = var.location
+#   resource_group_name             = module.resource_group.name
+#   size                            = "Standard_E2s_v6"   # update when capacity available
+#   zone                            = "2"
+#   admin_username                  = "cccadmin"
+#   disable_password_authentication = true
+#   network_interface_ids           = [azurerm_network_interface.vm.id]
+#   tags                            = local.tags
+#
+#   admin_ssh_key {
+#     username   = "cccadmin"
+#     public_key = tls_private_key.vm.public_key_openssh
+#   }
+#
+#   os_disk {
+#     caching              = "ReadWrite"
+#     storage_account_type = "Standard_LRS"
+#   }
+#
+#   source_image_reference {
+#     publisher = "Canonical"
+#     offer     = "ubuntu-24_04-lts"
+#     sku       = "server"
+#     version   = "latest"
+#   }
+#
+#   custom_data = base64encode(<<-CLOUDINIT
+#     #!/bin/bash
+#     mkdir -p /opt/ccc-testdata
+#     echo "=== CCC Azure Backup Test Workload ===" > /opt/ccc-testdata/sample.txt
+#     echo "Created: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /opt/ccc-testdata/sample.txt
+#     for i in $(seq 1 100); do
+#       echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) | Workload record $i | INFO | Simulated application log entry" >> /opt/ccc-testdata/workload.log
+#     done
+#     chmod -R 644 /opt/ccc-testdata/
+#     echo "CCC test data seeded at $(date -u)" >> /var/log/ccc-backup-init.log
+#   CLOUDINIT
+#   )
+# }
+#
+# resource "azurerm_backup_protected_vm" "nonprod" {
+#   resource_group_name = module.resource_group.name
+#   recovery_vault_name = module.recovery_services_vault.resource.name
+#   source_vm_id        = azurerm_linux_virtual_machine.nonprod.id
+#   backup_policy_id    = azurerm_backup_policy_vm.vm_nonprod.id
+#   depends_on          = [azurerm_linux_virtual_machine.nonprod]
+# }

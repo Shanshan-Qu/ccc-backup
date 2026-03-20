@@ -67,9 +67,23 @@ output "workload_file_share_name" {
   value       = azurerm_storage_share.test.name
 }
 
-# workload_vm_* outputs are intentionally omitted: VM SKUs are NotAvailableForSubscription
-# in NZN for this sandbox. Once VM quota is granted, add:
-#   azurerm_network_interface.vm
-#   azurerm_linux_virtual_machine.nonprod (Standard_D2s_v5, Ubuntu 22.04 gen2)
-#   azurerm_backup_protected_vm.nonprod (CCC-Policy enhanced V2)
-# and expose workload_vm_id / workload_vm_name / workload_vm_ssh_private_key outputs.
+# workload_vm_* outputs are commented out: NZN has no available capacity for any
+# general-purpose VM SKU in this subscription (see workloads.tf for details).
+# NIC (nic-ccc-backup-nzn-test-01) and TLS key are deployed and waiting.
+# Uncomment these outputs when VM capacity is granted.
+#
+# output "workload_vm_id" {
+#   description = "Resource ID of the non-prod test VM registered for backup."
+#   value       = azurerm_linux_virtual_machine.nonprod.id
+# }
+#
+# output "workload_vm_name" {
+#   description = "Name of the non-prod test VM."
+#   value       = azurerm_linux_virtual_machine.nonprod.name
+# }
+#
+# output "workload_vm_ssh_private_key" {
+#   description = "PEM-encoded SSH private key for the test VM (non-prod only — do not use in production)."
+#   value       = tls_private_key.vm.private_key_pem
+#   sensitive   = true
+# }
