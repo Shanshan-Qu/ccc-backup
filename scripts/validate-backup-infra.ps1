@@ -30,7 +30,7 @@
 
 [CmdletBinding()]
 param(
-    [string] $SubscriptionId = "ee118ff5-df4c-4870-8684-84953408d2ac",
+    [string] $SubscriptionId = "634c603a-fa54-431f-8fdd-2279020b1cb9",
     [string] $ResourceGroup  = "rg-rsv-backup-nzn",
     [string] $VaultName      = "rsv-ccc-backup-nzn-test",
     [string] $LawName        = "law-ccc-backup-nzn-test"
@@ -74,7 +74,7 @@ foreach ($mod in @("Az.Accounts","Az.RecoveryServices","Az.Monitor","Az.Network"
 $ctx = Get-AzContext -ErrorAction SilentlyContinue
 if (-not $ctx -or $ctx.Subscription.Id -ne $SubscriptionId) {
     Write-Info "Connecting to subscription $SubscriptionId ..."
-    Connect-AzAccount -SubscriptionId $SubscriptionId -TenantId "c1d4811c-c6a3-4537-ae43-59889285e324" | Out-Null
+    Connect-AzAccount -SubscriptionId $SubscriptionId -TenantId "16b3c013-d300-468d-ac64-7eda0820b6d3" | Out-Null
 }
 Set-AzContext -SubscriptionId $SubscriptionId | Out-Null
 Write-Info "Authenticated as: $((Get-AzContext).Account.Id)"
@@ -199,6 +199,38 @@ if ($sa) {
     Test-Condition "TC08-05" "File share 'ccc-test-share' exists" ($null -ne $share)
 }
 
+# ── 9. Workload VM ─────────────────────────────────────────────────────────────
+Write-Step "TC09 – Workload VM"
+
+$vm = Get-AzVM -ResourceGroupName $ResourceGroup -Name "vm-ccc-backup-nzn-test-01" -ErrorAction SilentlyContinue
+Test-Condition "TC09-01" "VM vm-ccc-backup-nzn-test-01 exists" ($null -ne $vm)
+
+if ($vm) {
+    Test-Condition "TC09-02" "VM is in NZN region" ($vm.Location -eq "newzealandnorth") "actual: $($vm.Location)"
+    Test-Condition "TC09-03" "VM SKU is Standard_D2s_v5" ($vm.HardwareProfile.VmSize -eq "Standard_D2s_v5") "actual: $($vm.HardwareProfile.VmSize)"
+
+    $vmStatus = Get-AzVM -ResourceGroupName $ResourceGroup -Name $vm.Name -Status -ErrorAction SilentlyContinue
+    $powerState = ($vmStatus.Statuses | Where-Object Code -like "PowerState/*").DisplayStatus
+    Test-Condition "TC09-04" "VM is running" ($powerState -eq "VM running") "actual: $powerState"
+
+    # TC09-05: Verify VM is registered for backup in the RSV vault
+    $vaultObj = Get-AzRecoveryServicesVault -ResourceGroupName $ResourceGroup -Name $VaultName -ErrorAction SilentlyContinue
+    if ($vaultObj) {
+        Set-AzRecoveryServicesVaultContext -Vault $vaultObj
+        $backupItem = Get-AzRecoveryServicesBackupItem -BackupManagementType AzureVM -WorkloadType AzureVM -VaultId $vaultObj.ID -ErrorAction SilentlyContinue |
+                      Where-Object { $_.VirtualMachineId -like "*vm-ccc-backup-nzn-test-01" }
+        Test-Condition "TC09-05" "VM is registered in RSV vault for backup" ($null -ne $backupItem) "found: $($backupItem.Name)"
+
+        if ($backupItem) {
+            Test-Condition "TC09-06" "VM backup protection status is Protected or IRPending" `
+                ($backupItem.ProtectionStatus -eq "Healthy" -or $backupItem.ProtectionStatus -eq "IRPending" -or $backupItem.ProtectionState -match "Protected|IRPending") `
+                "ProtectionStatus=$($backupItem.ProtectionStatus) ProtectionState=$($backupItem.ProtectionState)"
+
+            Test-Condition "TC09-07" "VM backup policy is CCC-Policy" ($backupItem.ProtectionPolicyName -eq "CCC-Policy") "actual: $($backupItem.ProtectionPolicyName)"
+        }
+    }
+}
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 Write-Host "`n" + ("─" * 60) -ForegroundColor DarkGray
 Write-Host "VALIDATION SUMMARY" -ForegroundColor White
@@ -219,17 +251,18 @@ if ($failed -gt 0) {
 
 Write-Host "`n"
 Write-Host "SANDBOX CONSTRAINT NOTES" -ForegroundColor Yellow
-Write-Host "  1. VM backup testing BLOCKED: all VM SKUs return 'NotAvailableForSubscription'"
-Write-Host "     in New Zealand North for this sandbox. Request quota via:"
-Write-Host "     Azure Portal → Subscriptions → Usage + Quotas → Request Increase"
+Write-Host "  1. VM backup (TC09) is now ACTIVE on ShanshanQu-NonProd (634c603a-...)."
+Write-Host "     VM vm-ccc-backup-nzn-test-01 (Standard_D2s_v5) deployed and registered"
+Write-Host "     to CCC-Policy in rsv-ccc-backup-nzn-test."
 Write-Host ""
 Write-Host "  2. Azure Files backup BLOCKED: subscription policy enforces"
-Write-Host "     allowSharedKeyAccess=false. Azure Backup requires key auth internally."
+Write-Host "     allowSharedKeyAccess=false (policy: StorageAccount_DisableLocalAuth_Modify,"
+Write-Host "     SFI-ID4.2.1 Storage Accounts - Safe Secrets Standard)."
+Write-Host "     Azure Backup requires key auth internally for AzureFiles workload type."
 Write-Host "     Resolution: request a policy exception for backup storage accounts,"
 Write-Host "     or wait for Azure Backup to support MSI-based file-share backup."
 Write-Host ""
-Write-Host "  Infrastructure is fully pre-provisioned. Once constraints are lifted,"
-Write-Host "  uncomment the relevant resources in workloads.tf and run 'terraform apply'."
+Write-Host "  Infrastructure is fully deployed. All VM backup test cases (TC09) active."
 
 if ($failures -gt 0) { exit 1 }
 exit 0
