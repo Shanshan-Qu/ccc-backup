@@ -5,7 +5,7 @@
 # ==============================================================
 
 # ── Core ────────────────────────────────────────────────────
-subscription_id = "ee118ff5-df4c-4870-8684-84953408d2ac"
+subscription_id = "634c603a-fa54-431f-8fdd-2279020b1cb9"
 location        = "newzealandnorth"
 environment     = "test"
 workload        = "backup"
