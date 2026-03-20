@@ -3,7 +3,7 @@
 *.tfstate.*
 *.tfstate.backup
 .terraform/
-.terraform.lock.hcl
+# Note: .terraform.lock.hcl IS committed (pins provider versions for the team)
 
 # Sensitive variable files – never commit real secrets
 *.auto.tfvars

@@ -6,11 +6,16 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 4.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.5"
+    }
   }
 }
 
 provider "azurerm" {
-  subscription_id = var.subscription_id
+  subscription_id      = var.subscription_id
+  storage_use_azuread  = true  # Subscription policy disables shared-key access; use Entra ID for storage data plane
 
   features {
     recovery_service {
