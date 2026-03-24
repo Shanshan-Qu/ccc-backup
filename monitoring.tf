@@ -1,21 +1,4 @@
-# ==============================================================
-# Monitoring, Alerting & Action Groups
-#
-# Implements the alerting strategy from spec §Monitoring §3.
-# Covers:
-#   •  Action groups   (ops + security/platform)
-#   •  Failed Jobs     (Log Analytics scheduled-query alert)
-#   •  Storage growth  (Log Analytics scheduled-query alerts)
-#   •  Backup/Restore Health Events  (Metric alerts)
-#   •  Resource Health (Activity-log alert)
-#   •  Administrative operations (Activity-log alerts)
-# ==============================================================
-
-# ──────────────────────────────────────────────────────────────
-# Action Groups
-# ──────────────────────────────────────────────────────────────
-
-# Backup operations / on-call team
+# Action groups
 resource "azurerm_monitor_action_group" "ops" {
   name                = local.action_group_ops
   resource_group_name = module.resource_group.name
@@ -32,7 +15,7 @@ resource "azurerm_monitor_action_group" "ops" {
   }
 }
 
-# Security / platform engineering team (admin events)
+# Security / platform engineering team
 resource "azurerm_monitor_action_group" "security" {
   name                = local.action_group_sec
   resource_group_name = module.resource_group.name
@@ -49,12 +32,6 @@ resource "azurerm_monitor_action_group" "security" {
   }
 }
 
-# ──────────────────────────────────────────────────────────────
-# Scheduled-Query (Log Analytics) Alert – All Failed Jobs
-#
-# Spec §Monitoring §3: "All Failed Jobs (Log Analytics alert rule):
-#  create an alert when failures > 0 in a rolling window (15–60 min)."
-# ──────────────────────────────────────────────────────────────
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "failed_jobs" {
   name                = "alert-${local.vault_name}-failed-jobs"
   location            = var.location
@@ -92,14 +69,6 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "failed_jobs" {
   }
 }
 
-# ──────────────────────────────────────────────────────────────
-# Scheduled-Query Alert – Cloud Storage Growth Per Backup Item
-#
-# Spec §Monitoring §3: "alert on abnormal growth (e.g. day-over-day %
-# increase or crossing a per-item threshold)."
-# Baseline threshold: alert when any single item exceeds 500 GB.
-# Adjust the threshold via the KQL where clause to suit.
-# ──────────────────────────────────────────────────────────────
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "storage_per_item" {
   name                = "alert-${local.vault_name}-storage-per-item"
   location            = var.location
@@ -116,9 +85,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "storage_per_item" {
   auto_mitigation_enabled = false
 
   criteria {
-    # Simplified query: count rows where per-item storage is high.
-    # Column validation against an empty table fails; this count-based query
-    # triggers once any data is present and the table schema is populated.
+    # Fires when any item's storage exceeds 500 GB (512000 MB)
     query = <<-KQL
       union isfuzzy=true (AddonAzureBackupStorage
       | where TimeGenerated > ago(1d)
@@ -141,12 +108,6 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "storage_per_item" {
   }
 }
 
-# ──────────────────────────────────────────────────────────────
-# Scheduled-Query Alert – Total Cloud Storage Trend
-#
-# Spec §Monitoring §3: "alert when total consumption crosses defined
-# thresholds or growth rate materially changes."
-# ──────────────────────────────────────────────────────────────
 resource "azurerm_monitor_scheduled_query_rules_alert_v2" "storage_total" {
   name                = "alert-${local.vault_name}-storage-total"
   location            = var.location
@@ -163,8 +124,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "storage_total" {
   auto_mitigation_enabled = false
 
   criteria {
-    # Simplified query: count rows where total storage exceeds threshold.
-    # Avoids column-name resolution failures on an empty LAW workspace.
+    # Fires when total vault storage exceeds 1 TB (1048576 MB)
     query = <<-KQL
       union isfuzzy=true (AddonAzureBackupStorage
       | where TimeGenerated > ago(1d)
@@ -187,11 +147,6 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "storage_total" {
   }
 }
 
-# ──────────────────────────────────────────────────────────────
-# Metric Alert – Backup Health Events
-#
-# Spec §Monitoring §3: "alert on relevant health event counts/conditions."
-# ──────────────────────────────────────────────────────────────
 resource "azurerm_monitor_metric_alert" "backup_health_events" {
   name                = "alert-${local.vault_name}-backup-health"
   resource_group_name = module.resource_group.name
@@ -223,12 +178,6 @@ resource "azurerm_monitor_metric_alert" "backup_health_events" {
   }
 }
 
-# ──────────────────────────────────────────────────────────────
-# Metric Alert – Restore Health Events
-#
-# Spec §Monitoring §3: "alert on restore health event conditions,
-# especially for production vaults."
-# ──────────────────────────────────────────────────────────────
 resource "azurerm_monitor_metric_alert" "restore_health_events" {
   name                = "alert-${local.vault_name}-restore-health"
   resource_group_name = module.resource_group.name
@@ -260,12 +209,6 @@ resource "azurerm_monitor_metric_alert" "restore_health_events" {
   }
 }
 
-# ──────────────────────────────────────────────────────────────
-# Resource Health Alert – Vault Availability
-#
-# Spec §Monitoring §3: "alert immediately on health state changes
-# (Degraded/Unavailable) for any production vaults."
-# ──────────────────────────────────────────────────────────────
 resource "azurerm_monitor_activity_log_alert" "resource_health" {
   name                = "alert-${local.vault_name}-resource-health"
   resource_group_name = module.resource_group.name
@@ -291,14 +234,7 @@ resource "azurerm_monitor_activity_log_alert" "resource_health" {
   }
 }
 
-# ──────────────────────────────────────────────────────────────
-# Activity Log Alerts – High-risk Administrative Operations
-#
-# Spec §Monitoring §3: "alert on high-risk events at minimum:
-#   Delete Vault, Approve Private Endpoint, Export Jobs,
-#   Get Security PIN Info, and other sensitive control-plane actions."
-# ──────────────────────────────────────────────────────────────
-
+# Administrative alerts: high-risk vault operations
 resource "azurerm_monitor_activity_log_alert" "admin_delete_vault" {
   name                = "alert-${local.vault_name}-admin-delete"
   resource_group_name = module.resource_group.name
@@ -338,10 +274,6 @@ resource "azurerm_monitor_activity_log_alert" "admin_approve_pe" {
     action_group_id = azurerm_monitor_action_group.security.id
   }
 }
-
-# Note: the Export Jobs operation (Microsoft.RecoveryServices/vaults/backupJobs/export/action)
-# is NOT supported as an Activity Log alert operation name. Operational job exports
-# should be monitored via the scheduled-query failed_jobs alert instead.
 
 resource "azurerm_monitor_activity_log_alert" "admin_security_pin" {
   name                = "alert-${local.vault_name}-admin-security-pin"

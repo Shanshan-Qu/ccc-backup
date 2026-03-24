@@ -18,12 +18,11 @@ terraform {
 }
 
 provider "azurerm" {
-  subscription_id      = var.subscription_id
-  storage_use_azuread  = true  # Subscription policy disables shared-key access; use Entra ID for storage data plane
+  subscription_id     = var.subscription_id
+  storage_use_azuread = true
 
   features {
     recovery_service {
-      # Allow vault deletion during teardown without unregistering items first.
       vm_backup_stop_protection_and_retain_data_on_destroy = true
     }
     resource_group {

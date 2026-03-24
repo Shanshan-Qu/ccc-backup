@@ -1,25 +1,14 @@
 locals {
-  # --------------------------------------------------------
-  # Naming  –  follows CCC pattern: <type>-ccc-<workload>-<region_code>[-<env>]
-  # Region code "nzn" = New Zealand North
-  # --------------------------------------------------------
-  region_code = "nzn"
+  region_code = "nzn" # New Zealand North
 
-  resource_group_name = "rg-rsv-backup-${local.region_code}"            # as spec: rg-rsv-backup-nzn
+  resource_group_name = "rg-rsv-backup-${local.region_code}"
   vault_name          = "rsv-ccc-${var.workload}-${local.region_code}-${var.environment}"
   law_name            = "law-ccc-${var.workload}-${local.region_code}-${var.environment}"
   action_group_ops    = "ag-backup-ops-${local.region_code}-${var.environment}"
   action_group_sec    = "ag-backup-sec-${local.region_code}-${var.environment}"
 
-  # --------------------------------------------------------
-  # Timezone –  NZST  (New Zealand Standard Time = UTC+12)
-  #             Azure uses Windows timezone identifiers
-  # --------------------------------------------------------
   nz_timezone = "New Zealand Standard Time"
 
-  # --------------------------------------------------------
-  # Default tags applied to every resource
-  # --------------------------------------------------------
   default_tags = {
     environment   = var.environment
     workload      = var.workload
@@ -29,10 +18,6 @@ locals {
   }
   tags = merge(local.default_tags, var.tags)
 
-  # --------------------------------------------------------
-  # RBAC – build a flat role_assignments map for the vault
-  # AVM expects: { "<unique_key>" = { role_definition_id_or_name, principal_id } }
-  # --------------------------------------------------------
   _backup_contributor_assignments = {
     for idx, principal_id in var.backup_contributor_principal_ids :
     "backup_contributor_${idx}" => {
@@ -69,9 +54,6 @@ locals {
     local._rsv_contributor_assignments,
   )
 
-  # --------------------------------------------------------
-  # Private endpoint  –  only create if subnet_id is provided
-  # --------------------------------------------------------
   create_private_endpoint = var.private_endpoint_subnet_id != ""
 
   vault_private_endpoints = local.create_private_endpoint ? {

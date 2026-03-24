@@ -30,17 +30,17 @@ output "recovery_services_vault_name" {
 
 output "backup_policy_vm_nonprod_id" {
   description = "Resource ID of the VM non-prod (CCC-Policy enhanced V2) backup policy."
-  value       = azurerm_backup_policy_vm.vm_nonprod.id
+  value       = module.recovery_services_vault.recovery_services_vault_vm_policy["ccc-policy"].resource_id
 }
 
 output "backup_policy_sql_id" {
   description = "Resource ID of the SQL Server workload (CCC-SQLPolicy) backup policy."
-  value       = azurerm_backup_policy_vm_workload.sql.id
+  value       = module.recovery_services_vault.recovery_workload_policy["ccc-sqlpolicy"].resource_id
 }
 
 output "backup_policy_azfiles_id" {
   description = "Resource ID of the Azure File Share (CCC-AzFiles-Policy) backup policy."
-  value       = azurerm_backup_policy_file_share.azfiles.id
+  value       = module.recovery_services_vault.recovery_services_vault_file_share_policy["ccc-azfiles-policy"].resource_id
 }
 
 output "action_group_ops_id" {
@@ -53,13 +53,9 @@ output "action_group_security_id" {
   value       = azurerm_monitor_action_group.security.id
 }
 
-# ==============================================================
-# Workload outputs
-# ==============================================================
-
 output "workload_storage_account_name" {
   description = "Name of the storage account hosting the test Azure File Share."
-  value       = azurerm_storage_account.files.name
+  value       = module.files_storage.resource.name
 }
 
 output "workload_file_share_name" {
@@ -69,16 +65,32 @@ output "workload_file_share_name" {
 
 output "workload_vm_id" {
   description = "Resource ID of the non-prod test VM registered for backup."
-  value       = azurerm_linux_virtual_machine.nonprod.id
+  value       = module.nonprod_vm.resource_id
 }
 
 output "workload_vm_name" {
   description = "Name of the non-prod test VM."
-  value       = azurerm_linux_virtual_machine.nonprod.name
+  value       = module.nonprod_vm.name
 }
 
 output "workload_vm_ssh_private_key" {
   description = "PEM-encoded SSH private key for the test VM (non-prod only — do not use in production)."
   value       = tls_private_key.vm.private_key_pem
+  sensitive   = true
+}
+
+output "sql_vm_id" {
+  description = "Resource ID of the SQL Server VM registered for workload backup."
+  value       = module.sql_vm.resource_id
+}
+
+output "sql_vm_name" {
+  description = "Name of the SQL Server VM."
+  value       = module.sql_vm.name
+}
+
+output "sql_vm_admin_password" {
+  description = "Generated admin password for the SQL Server VM (sensitive)."
+  value       = module.sql_vm.admin_password
   sensitive   = true
 }

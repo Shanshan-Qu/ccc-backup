@@ -1,19 +1,16 @@
-# ============================================================
-# Core
-# ============================================================
 variable "subscription_id" {
   description = "Azure Subscription ID in which to deploy all resources."
   type        = string
 }
 
 variable "location" {
-  description = "Azure region.  Christchurch City Council target is New Zealand North."
+  description = "Azure region."
   type        = string
   default     = "newzealandnorth"
 }
 
 variable "environment" {
-  description = "Short environment label (e.g. test, dev, prod).  Used in resource names."
+  description = "Short environment label (e.g. test, dev, prod)."
   type        = string
   default     = "test"
 }
@@ -24,9 +21,6 @@ variable "workload" {
   default     = "backup"
 }
 
-# ============================================================
-# Networking – Private Endpoint
-# ============================================================
 variable "private_endpoint_subnet_id" {
   description = <<-EOT
     Resource ID of the subnet in the spoke VNet to attach the Recovery Services
@@ -48,9 +42,6 @@ variable "private_dns_zone_ids" {
   default     = []
 }
 
-# ============================================================
-# Log Analytics
-# ============================================================
 variable "log_analytics_retention_days" {
   description = "Retention period (days) for the Log Analytics workspace."
   type        = number
@@ -62,18 +53,12 @@ variable "log_analytics_retention_days" {
   }
 }
 
-# ============================================================
-# Vault resilience
-# ============================================================
 variable "enable_immutability" {
   description = "Set to true to enable Unlocked vault immutability (optional for non-prod)."
   type        = bool
   default     = false
 }
 
-# ============================================================
-# RBAC
-# ============================================================
 variable "backup_contributor_principal_ids" {
   description = "List of Entra ID object IDs to assign the Backup Contributor role on the vault."
   type        = list(string)
@@ -98,9 +83,6 @@ variable "rsv_contributor_principal_ids" {
   default     = []
 }
 
-# ============================================================
-# Alerting
-# ============================================================
 variable "alert_email_receivers" {
   description = "List of e-mail addresses for the backup operations action group."
   type        = list(string)
@@ -113,9 +95,6 @@ variable "alert_email_receivers_security" {
   default     = []
 }
 
-# ============================================================
-# Tags
-# ============================================================
 variable "tags" {
   description = "Additional tags to merge with the default tags."
   type        = map(string)
