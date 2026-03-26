@@ -40,6 +40,18 @@ resource "azurerm_backup_protected_vm" "nonprod" {
   depends_on = [module.nonprod_vm]
 }
 
+# SQL VM OS-level backup (disk / OS protection)
+# The SQL workload (database-level) backup is managed via the vault workload
+# container registration in the test script using the CCC-SQL-Workload-Policy.
+resource "azurerm_backup_protected_vm" "sql" {
+  resource_group_name = module.resource_group.name
+  recovery_vault_name = module.recovery_services_vault.resource.name
+  source_vm_id        = module.sql_vm.resource_id
+  backup_policy_id    = module.recovery_services_vault.recovery_services_vault_vm_policy["ccc-vm-policy"].resource_id
+
+  depends_on = [module.sql_vm]
+}
+
 resource "random_password" "sql_admin" {
   length           = 16
   special          = true

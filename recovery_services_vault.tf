@@ -11,7 +11,7 @@ module "recovery_services_vault" {
   cross_region_restore_enabled  = false
   soft_delete_enabled           = true
   immutability                  = var.enable_immutability ? "Unlocked" : "Disabled"
-  public_network_access_enabled = true  # no private endpoint in this test env; enable public access so SQL workload extension can reach the vault
+  public_network_access_enabled = false  # vault is accessible only via private endpoint (spec requirement)
 
   private_endpoints = local.vault_private_endpoints
 

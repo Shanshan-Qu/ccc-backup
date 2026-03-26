@@ -64,6 +64,11 @@ module "workload_vnet" {
         id = module.workload_nsg.resource_id
       }
     }
+    private_endpoints = {
+      name             = "snet-pe-${local.region_code}-${var.environment}"
+      address_prefixes = ["10.100.2.0/27"]
+      # Private endpoint NICs do not require outbound NSG rules
+    }
   }
 
   depends_on = [module.resource_group, module.workload_nsg]

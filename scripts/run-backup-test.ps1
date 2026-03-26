@@ -50,7 +50,8 @@ param(
     [string] $StorageAccountName = "",   # populated from terraform output if empty
     [string] $FileShareName      = "ccc-test-share",
     [string] $VmName             = "",   # populated from terraform output if empty
-    [string] $SqlVmName          = ""    # populated from terraform output if empty
+    [string] $SqlVmName          = "",   # populated from terraform output if empty
+    [switch] $FailedOnly                 # when set, only re-run TCs that failed in the previous run
 )
 
 Set-StrictMode -Version Latest
@@ -67,10 +68,36 @@ function Write-Info([string]$msg) { Write-Host "      $msg" -ForegroundColor Gra
 
 $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
+# Path where results are saved/loaded for -FailedOnly re-runs
+$resultsFile = Join-Path $PSScriptRoot "test-results.json"
+
+# In FailedOnly mode, load the previous run's results and skip TCs that already passed
+$prevPassed = @{}
+if ($FailedOnly -and (Test-Path $resultsFile)) {
+    $prevResults = Get-Content $resultsFile -Raw | ConvertFrom-Json
+    foreach ($r in $prevResults) {
+        if ($r.Status -eq "PASS") { $prevPassed[$r.TestCase] = $r.Detail }
+    }
+    Write-Host "  FailedOnly: $($prevPassed.Count) TC(s) carried forward from previous run." -ForegroundColor DarkGray
+} elseif ($FailedOnly) {
+    Write-Host "  FailedOnly: no previous results found at $resultsFile – running all TCs." -ForegroundColor Yellow
+}
+
 function Write-TestResult([string]$tc, [string]$status, [string]$detail) {
     $results.Add([PSCustomObject]@{ TestCase = $tc; Status = $status; Detail = $detail })
     if ($status -eq "PASS") { Write-Pass "$tc – $detail" }
     else                     { Write-Fail "$tc – $detail" }
+}
+
+# Returns $true if the TC should run; in FailedOnly mode carries forward the previous PASS result
+function Test-ShouldRun([string]$tc) {
+    if (-not $FailedOnly) { return $true }
+    if ($prevPassed.ContainsKey($tc)) {
+        $results.Add([PSCustomObject]@{ TestCase = $tc; Status = "PASS"; Detail = "(prev run) $($prevPassed[$tc])" })
+        Write-Host "  [SKIP] $tc – passed in previous run." -ForegroundColor DarkGray
+        return $false
+    }
+    return $true
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -158,9 +185,10 @@ Write-Info "SQL VM name     : $SqlVmName"
 
 Write-Step "TC001 – Uploading test file to '$FileShareName' in '$StorageAccountName'"
 
-try {
-    # Use OAuth (Azure AD) – storage account keys are disabled by subscription policy
-    $storageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount
+if (Test-ShouldRun "TC001") {
+    try {
+        # Use OAuth (Azure AD) – storage account keys are disabled by subscription policy
+        $storageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount
 
     # Create test directory
     try { New-AzStorageDirectory -Context $storageCtx -ShareName $FileShareName -Path "backup-test" | Out-Null }
@@ -188,10 +216,11 @@ try {
         -Path       "backup-test/test-data-$(Get-Date -Format 'yyyyMMdd-HHmmss').txt" `
         -Force | Out-Null
 
-    Remove-Item $tmpFile -Force
-    Write-TestResult "TC001" "PASS" "Test file uploaded to $FileShareName/backup-test/"
-} catch {
-    Write-TestResult "TC001" "FAIL" "Upload failed: $_"
+        Remove-Item $tmpFile -Force
+        Write-TestResult "TC001" "PASS" "Test file uploaded to $FileShareName/backup-test/"
+    } catch {
+        Write-TestResult "TC001" "FAIL" "Upload failed: $_"
+    }
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -200,8 +229,9 @@ try {
 
 Write-Step "TC002-SQL-Seed – Creating CCCTestDB and seeding 50 rows on SQL VM '$SqlVmName'"
 
-try {
-    if ([string]::IsNullOrEmpty($SqlVmName)) {
+if (Test-ShouldRun "TC002-SQL-Seed") {
+    try {
+        if ([string]::IsNullOrEmpty($SqlVmName)) {
         Write-TestResult "TC002-SQL-Seed" "FAIL" "SqlVmName is empty – pass -SqlVmName or ensure terraform output sql_vm_name is set."
     } else {
         # Write SQL seeding script to a temp file so quoting is not an issue
@@ -227,9 +257,9 @@ sqlcmd -S localhost -U $SqlAdminLogin -P "$SqlAdminPassword" -d CCCTestDB -Q "DE
         } else {
             Write-TestResult "TC002-SQL-Seed" "FAIL" "Unexpected seed output: $seedOutput"
         }
+    } catch {
+        Write-TestResult "TC002-SQL-Seed" "FAIL" "SQL seeding failed: $_"
     }
-} catch {
-    Write-TestResult "TC002-SQL-Seed" "FAIL" "SQL seeding failed: $_"
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -248,7 +278,8 @@ Set-AzRecoveryServicesVaultContext -Vault $vault
 Write-Step "TC002 – Triggering on-demand backup for file share '$FileShareName'"
 
 $filesJob = $null
-try {
+if (Test-ShouldRun "TC002") {
+    try {
     $storageContainer = Get-AzRecoveryServicesBackupContainer `
         -ContainerType AzureStorage |
         Where-Object { $_.FriendlyName -like "*$StorageAccountName*" }
@@ -270,8 +301,9 @@ try {
             Write-TestResult "TC002" "PASS" "On-demand backup job started (Job ID: $($filesJob.JobId))"
         }
     }
-} catch {
-    Write-TestResult "TC002" "FAIL" "Error triggering file share backup: $_"
+    } catch {
+        Write-TestResult "TC002" "FAIL" "Error triggering file share backup: $_"
+    }
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -281,7 +313,8 @@ try {
 Write-Step "TC003 – Triggering on-demand backup for VM '$VmName'"
 
 $vmJob = $null
-try {
+if (Test-ShouldRun "TC003") {
+    try {
     $vmContainer = Get-AzRecoveryServicesBackupContainer `
         -ContainerType AzureVM |
         Where-Object { $_.FriendlyName -like "*$VmName*" }
@@ -302,8 +335,9 @@ try {
             Write-TestResult "TC003" "PASS" "On-demand VM backup job started (Job ID: $($vmJob.JobId))"
         }
     }
-} catch {
-    Write-TestResult "TC003" "FAIL" "Error triggering VM backup: $_"
+    } catch {
+        Write-TestResult "TC003" "FAIL" "Error triggering VM backup: $_"
+    }
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -335,11 +369,15 @@ function Wait-BackupJob {
     }
 }
 
-$r4 = Wait-BackupJob -Job $filesJob -Label "FileShare"
-Write-TestResult "TC004" $r4.Status $r4.Detail
+if (Test-ShouldRun "TC004") {
+    $r4 = Wait-BackupJob -Job $filesJob -Label "FileShare"
+    Write-TestResult "TC004" $r4.Status $r4.Detail
+}
 
-$r5 = Wait-BackupJob -Job $vmJob   -Label "VM"
-Write-TestResult "TC005" $r5.Status $r5.Detail
+if (Test-ShouldRun "TC005") {
+    $r5 = Wait-BackupJob -Job $vmJob -Label "VM"
+    Write-TestResult "TC005" $r5.Status $r5.Detail
+}
 
 # ──────────────────────────────────────────────────────────────
 # Step 7b – Register SQL workload container, enable protection,
@@ -349,7 +387,8 @@ Write-TestResult "TC005" $r5.Status $r5.Detail
 Write-Step "TC006-SQL – Registering SQL VM workload container and triggering SQL backup"
 
 $sqlJob = $null
-try {
+if (Test-ShouldRun "TC006-SQL") {
+    try {
     if ([string]::IsNullOrEmpty($SqlVmName)) {
         Write-TestResult "TC006-SQL" "FAIL" "SqlVmName is empty – skipping SQL backup steps."
     } else {
@@ -401,14 +440,17 @@ try {
             }
         }
     }
-} catch {
-    Write-TestResult "TC006-SQL" "FAIL" "SQL backup setup failed: $_"
+    } catch {
+        Write-TestResult "TC006-SQL" "FAIL" "SQL backup setup failed: $_"
+    }
 }
 
 # Wait for SQL job
 Write-Step "TC007-SQL – Waiting for SQL backup job to complete (timeout: 60 min)"
-$r7 = Wait-BackupJob -Job $sqlJob -Label "SQLFullBackup" -TimeoutMinutes 60
-Write-TestResult "TC007-SQL" $r7.Status $r7.Detail
+if (Test-ShouldRun "TC007-SQL") {
+    $r7 = Wait-BackupJob -Job $sqlJob -Label "SQLFullBackup" -TimeoutMinutes 60
+    Write-TestResult "TC007-SQL" $r7.Status $r7.Detail
+}
 
 # ──────────────────────────────────────────────────────────────
 # Step 8 – Verify recovery points exist
@@ -417,7 +459,8 @@ Write-TestResult "TC007-SQL" $r7.Status $r7.Detail
 Write-Step "TC006 / TC007 – Verifying recovery points exist"
 
 # File share recovery points
-try {
+if (Test-ShouldRun "TC006") {
+    try {
     $storageContainer2 = Get-AzRecoveryServicesBackupContainer `
         -ContainerType AzureStorage |
         Where-Object { $_.FriendlyName -like "*$StorageAccountName*" }
@@ -433,12 +476,14 @@ try {
     } else {
         Write-TestResult "TC006" "FAIL" "No recovery points found for file share '$FileShareName'."
     }
-} catch {
-    Write-TestResult "TC006" "FAIL" "Error checking file share recovery points: $_"
+    } catch {
+        Write-TestResult "TC006" "FAIL" "Error checking file share recovery points: $_"
+    }
 }
 
 # VM recovery points
-try {
+if (Test-ShouldRun "TC007") {
+    try {
     $vmContainer2 = Get-AzRecoveryServicesBackupContainer `
         -ContainerType AzureVM |
         Where-Object { $_.FriendlyName -like "*$VmName*" }
@@ -453,12 +498,14 @@ try {
     } else {
         Write-TestResult "TC007" "FAIL" "No recovery points found for VM '$VmName'."
     }
-} catch {
-    Write-TestResult "TC007" "FAIL" "Error checking VM recovery points: $_"
+    } catch {
+        Write-TestResult "TC007" "FAIL" "Error checking VM recovery points: $_"
+    }
 }
 
 # SQL recovery points
-try {
+if (Test-ShouldRun "TC008") {
+    try {
     if (-not [string]::IsNullOrEmpty($SqlVmName)) {
         $sqlItem2 = Get-AzRecoveryServicesBackupItem `
             -WorkloadType MSSQL -BackupManagementType AzureWorkload `
@@ -478,9 +525,14 @@ try {
     } else {
         Write-TestResult "TC008" "FAIL" "SqlVmName is empty – SQL recovery point check skipped."
     }
-} catch {
-    Write-TestResult "TC008" "FAIL" "Error checking SQL recovery points: $_"
+    } catch {
+        Write-TestResult "TC008" "FAIL" "Error checking SQL recovery points: $_"
+    }
 }
+
+# Save results for -FailedOnly re-runs
+$results | ConvertTo-Json -Depth 5 | Set-Content $resultsFile -Encoding UTF8
+Write-Info "Results saved to $resultsFile"
 
 # ──────────────────────────────────────────────────────────────
 # Final Summary

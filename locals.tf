@@ -62,15 +62,18 @@ locals {
     local._rsv_contributor_assignments,
   )
 
-  create_private_endpoint = var.private_endpoint_subnet_id != ""
-
-  vault_private_endpoints = local.create_private_endpoint ? {
+  # Private endpoint: always enabled per spec (public access disabled)
+  vault_private_endpoints = {
     "pe-${local.vault_name}" = {
       name                            = "pe-${local.vault_name}"
-      subnet_resource_id              = var.private_endpoint_subnet_id
+      subnet_resource_id              = module.workload_vnet.subnets["private_endpoints"].resource_id
       subresource_name                = "AzureBackup"
-      private_dns_zone_resource_ids   = toset(var.private_dns_zone_ids)
+      private_dns_zone_resource_ids   = toset([
+        azurerm_private_dns_zone.backup.id,
+        azurerm_private_dns_zone.backup_queue.id,
+        azurerm_private_dns_zone.backup_blob.id,
+      ])
       private_service_connection_name = "psc-${local.vault_name}"
     }
-  } : {}
+  }
 }
