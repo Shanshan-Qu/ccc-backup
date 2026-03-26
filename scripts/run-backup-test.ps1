@@ -187,8 +187,8 @@ Write-Step "TC001 – Uploading test file to '$FileShareName' in '$StorageAccoun
 
 if (Test-ShouldRun "TC001") {
     try {
-        # Use OAuth (Azure AD) – storage account keys are disabled by subscription policy
-        $storageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount
+        # Use OAuth (Azure AD) with backup request intent flag (required for Storage File Data Privileged Contributor)
+        $storageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount -EnableFileBackupRequestIntent
 
     # Create test directory
     try { New-AzStorageDirectory -Context $storageCtx -ShareName $FileShareName -Path "backup-test" | Out-Null }
