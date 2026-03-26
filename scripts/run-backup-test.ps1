@@ -393,6 +393,15 @@ if (Test-ShouldRun "TC006-SQL") {
     if ([string]::IsNullOrEmpty($SqlVmName)) {
         Write-TestResult "TC006-SQL" "FAIL" "SqlVmName is empty – skipping SQL backup steps."
     } else {
+        # Check first if CCCTestDB is already a protected backup item (from a prior run)
+        $sqlItem = Get-AzRecoveryServicesBackupItem `
+            -WorkloadType MSSQL -BackupManagementType AzureWorkload `
+            -VaultId $vault.ID -ErrorAction SilentlyContinue |`
+            Where-Object { $_.FriendlyName -eq "CCCTestDB" }
+
+        if ($null -ne $sqlItem) {
+            Write-Host "  CCCTestDB is already protected – triggering on-demand backup directly."
+        } else {
         # Register the SQL VM as an AzureVMAppContainer
         $sqlVmId = az vm show -g $ResourceGroup -n $SqlVmName --query id -o tsv
         # Register container; if already registered from a prior run, ignore the error and continue
@@ -434,20 +443,23 @@ if (Test-ShouldRun "TC006-SQL") {
                 Enable-AzRecoveryServicesBackupProtection `
                     -ProtectableItem $dbItem -Policy $sqlPolicy -VaultId $vault.ID | Out-Null
 
-                # Trigger on-demand full backup
+                # Get the now-protected backup item
                 $sqlItem = Get-AzRecoveryServicesBackupItem `
                     -WorkloadType MSSQL -BackupManagementType AzureWorkload `
                     -VaultId $vault.ID |`
                     Where-Object { $_.FriendlyName -eq "CCCTestDB" }
+            }
+        }
+        } # end else (not already protected)
 
+        if ($null -ne $sqlItem) {
                 $sqlJob = Backup-AzRecoveryServicesBackupItem `
                     -Item $sqlItem -BackupType Full `
                     -ExpiryDateTimeUTC (Get-Date).ToUniversalTime().AddDays(45) `
                     -VaultId $vault.ID
                 Write-TestResult "TC006-SQL" "PASS" "SQL full backup triggered – Job ID: $($sqlJob.JobId)"
-            }
         }
-    }
+    }  # end else (SqlVmName not empty)
     } catch {
         Write-TestResult "TC006-SQL" "FAIL" "SQL backup setup failed: $_"
     }
