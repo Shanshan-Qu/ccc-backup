@@ -19,15 +19,23 @@ resource "azurerm_backup_container_storage_account" "files" {
   depends_on = [module.files_storage]
 }
 
-# Azure Files protection must be configured via the Portal (shared key access is disabled):
-# Vault -> Backup -> Azure File Share -> select storage account -> assign CCC-AzFiles-Policy
+# Azure File Share backup protection (shared key access now enabled — configured via Terraform)
+resource "azurerm_backup_protected_file_share" "test_share" {
+  resource_group_name       = module.resource_group.name
+  recovery_vault_name       = module.recovery_services_vault.resource.name
+  source_storage_account_id = module.files_storage.resource_id
+  source_file_share_name    = azurerm_storage_share.test.name
+  backup_policy_id          = module.recovery_services_vault.recovery_services_vault_file_share_policy["ccc-azfiles-policy"].resource_id
+
+  depends_on = [azurerm_backup_container_storage_account.files, azurerm_storage_share.test]
+}
 
 # Non-prod Linux VM backup registration
 resource "azurerm_backup_protected_vm" "nonprod" {
   resource_group_name = module.resource_group.name
   recovery_vault_name = module.recovery_services_vault.resource.name
   source_vm_id        = module.nonprod_vm.resource_id
-  backup_policy_id    = module.recovery_services_vault.recovery_services_vault_vm_policy["ccc-policy"].resource_id
+  backup_policy_id    = module.recovery_services_vault.recovery_services_vault_vm_policy["ccc-vm-policy"].resource_id
 
   depends_on = [module.nonprod_vm]
 }

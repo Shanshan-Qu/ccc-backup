@@ -39,7 +39,7 @@
 
 [CmdletBinding()]
 param(
-    [string] $SubscriptionId    = "ee118ff5-df4c-4870-8684-84953408d2ac",
+    [string] $SubscriptionId    = "634c603a-fa54-431f-8fdd-2279020b1cb9",
     [string] $ResourceGroup     = "rg-rsv-backup-nzn",
     [string] $VaultName         = "rsv-ccc-backup-nzn-test",
     [string] $StorageAccountName = "",   # populated from terraform output if empty

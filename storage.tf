@@ -9,7 +9,7 @@ module "files_storage" {
   account_replication_type        = "LRS"
   account_kind                    = "StorageV2"
   allow_nested_items_to_be_public = false
-  shared_access_key_enabled       = false
+  shared_access_key_enabled       = true  # shared-key constraint lifted on this subscription
   tags                            = local.tags
 
   role_assignments = {

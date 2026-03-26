@@ -1,207 +1,451 @@
 # CCC Azure Backup – Test Plan
 
-> **Version**: 1.1  
-> **Environment**: `ME-MngEnvMCAP269331-shanshanqu-6` (sandbox)  
+> **Version**: 3.0  
+> **Environment**: `ShanshanQu-NonProd` (subscription `634c603a-fa54-431f-8fdd-2279020b1cb9`)  
 > **Region**: New Zealand North (`newzealandnorth`)  
-> **Vault**: `rsv-ccc-backup-nzn-test` in `rg-rsv-backup-nzn`
+> **Vault**: `rsv-ccc-backup-nzn-test` in `rg-rsv-backup-nzn`  
+> **Alert notifications**: `shanshanqu@microsoft.com`
+
+**What changed in v3.0**: VM-quota and Azure Files shared-key constraints are resolved on this subscription. Azure Files backup protection is now fully managed by Terraform (no Portal step). A test-data seeding phase and a full SQL workload backup/restore phase have been added.
 
 ---
 
-## 1. Overview
+## Common Session Variables
 
-This test plan validates the Azure Backup infrastructure deployed via Terraform against the requirements specified in `doc.txt`.  It is divided into:
+Set these once at the top of every PowerShell session before running any phase below.
 
-| Phase | Scope | Status |
-|-------|-------|--------|
-| **Phase 1 – Infrastructure validation** | Vault, policies, monitoring exist and are correctly configured | ✅ Automated (see §3) |
-| **Phase 2 – Azure Files backup**        | File share is registered and a successful backup is taken    | ⚠️ Blocked by sandbox policy (see §6) |
-| **Phase 3 – VM backup**                 | Non-prod VM is registered and a successful backup is taken   | ⚠️ Blocked by sandbox quota (see §6) |
-| **Phase 4 – SQL backup**                | SQL Server VM registers and log/full/diff backups succeed    | 🔜 Production phase |
-| **Phase 5 – Restore tests**             | Recovery from each workload type is verified                 | 🔜 Requires Phase 2/3/4 completion |
+```powershell
+$Sub       = "634c603a-fa54-431f-8fdd-2279020b1cb9"
+$RG        = "rg-rsv-backup-nzn"
+$Vault     = "rsv-ccc-backup-nzn-test"
+$VMName    = "vm-ccc-backup-nzn-test-01"
+$SQLVMName = "vm-ccc-sql-nzn-test-01"
+$Share     = "ccc-test-share"
+
+# Resolve the storage account name from Terraform output
+$SAName = terraform output -raw workload_storage_account_name
+
+az account set --subscription $Sub
+
+# Set vault context (used by all Az.RecoveryServices cmdlets)
+$v = Get-AzRecoveryServicesVault -ResourceGroupName $RG -Name $Vault
+Set-AzRecoveryServicesVaultContext -Vault $v
+```
 
 ---
 
-## 2. Pre-Conditions
+## 1. Pre-Conditions
 
-| # | Condition | Check |
-|---|-----------|-------|
-| P1 | Terraform v1.9+ installed | `terraform version` |
-| P2 | Azure credentials available | `az account show` or `Connect-AzAccount` |
-| P3 | Access to subscription `ee118ff5-df4c-4870-8684-84953408d2ac` | Role: Contributor or Owner |
-| P4 | Az PowerShell modules: Az.Accounts, Az.RecoveryServices, Az.Monitor, Az.Network, Az.Storage, Az.OperationalInsights | Auto-installed by the validation script |
+| # | Condition | Command |
+|---|-----------|---------|
+| P1 | Logged in to correct subscription | `az account show` → `id` = `634c603a-fa54-431f-8fdd-2279020b1cb9` |
+| P2 | Terraform apply complete, no drift | `terraform plan` exits with "No changes" |
+| P3 | Linux VM running | `az vm get-instance-view -g $RG -n $VMName --query "instanceView.statuses[1].displayStatus" -o tsv` → `VM running` |
+| P4 | SQL VM running | `az vm get-instance-view -g $RG -n $SQLVMName --query "instanceView.statuses[1].displayStatus" -o tsv` → `VM running` |
+| P5 | File share exists | `az storage share exists --account-name $SAName --name $Share --auth-mode login -o tsv` → `True` |
 
 ---
 
-## 3. Phase 1 – Automated Infrastructure Validation
-
-Run the validation script to confirm every resource is correctly configured:
+## 2. Deploy / Re-deploy
 
 ```powershell
 cd "C:\Users\shanshanqu\OneDrive - Microsoft\Customers\CCC\AzureBackup-terraform"
-.\scripts\validate-backup-infra.ps1
+az account set --subscription $Sub
+& "C:\Users\shanshanqu\bin\terraform\terraform.exe" apply -auto-approve
 ```
-
-### Test Cases
-
-| ID | Component | Assertion |
-|----|-----------|-----------|
-| TC01-01 | Vault | `rsv-ccc-backup-nzn-test` exists |
-| TC01-02 | Vault | SKU = Standard |
-| TC01-03 | Vault | Location = newzealandnorth |
-| TC01-04 | Vault | Resource group = rg-rsv-backup-nzn |
-| TC01-05 | Vault | Soft-delete enabled |
-| TC01-06 | Vault | Diagnostic settings → LAW (allLogs) |
-| TC02-01 | Policy | `CCC-Policy` (VM enhanced V2) exists |
-| TC02-02 | Policy | `CCC-SQLPolicy` exists |
-| TC02-03 | Policy | `CCC-AzFiles-Policy` exists |
-| TC02-04 | Policy | VM policy workload type = AzureVM |
-| TC02-05 | Policy | VM policy is Enhanced (V2) |
-| TC02-06 | Policy | SQL policy workload type = AzureWorkload |
-| TC02-07 | Policy | AzFiles policy workload type = AzureFiles |
-| TC03-01 | LAW | `law-ccc-backup-nzn-test` exists |
-| TC03-02 | LAW | Retention ≥ 30 days |
-| TC03-03 | LAW | Location = newzealandnorth |
-| TC04-01 | Monitoring | Ops action group exists |
-| TC04-02 | Monitoring | Security action group exists |
-| TC05-01 | Alerts | Backup health metric alert exists |
-| TC05-02 | Alerts | Restore health metric alert exists |
-| TC05-03 | Alerts | Resource health activity log alert exists |
-| TC05-04 | Alerts | Vault delete activity log alert exists |
-| TC05-05 | Alerts | Private endpoint approval alert exists |
-| TC05-06 | Alerts | Security PIN alert exists |
-| TC06-01 | Alerts | Failed jobs SQR rule exists |
-| TC06-02 | Alerts | Storage-per-item SQR rule exists |
-| TC06-03 | Alerts | Storage-total SQR rule exists |
-| TC07-01 | Networking | Workload VNet (`vnet-ccc-backup-nzn-test`) exists |
-| TC07-02 | Networking | Workload NSG (`nsg-workload-nzn-test`) exists |
-| TC07-03 | Networking | NSG allows AzureBackup outbound (port 443) |
-| TC07-04 | Networking | NSG allows Storage outbound (port 443) |
-| TC08-01 | Storage | Storage account `stcccv6hqfn91` exists |
-| TC08-02 | Storage | Storage account location = newzealandnorth |
-| TC08-03 | Storage | Storage account SKU = Standard_LRS |
-| TC08-04 | Storage | Public blob access disabled |
-| TC08-05 | Storage | File share `ccc-test-share` exists |
-
-**Pass criteria**: All test cases PASS.
 
 ---
 
-## 4. Phase 2 – Azure Files Backup Test (when policy exception granted)
+## 3. Phase 0 – Test Data Seeding
 
-### Pre-conditions
-- Storage account `stcccv6hqfn91` has `allowSharedKeyAccess = true`  
-  _(Azure Backup requires key auth; policy exception needed — see §6)_
-- Uncomment `azurerm_backup_protected_file_share.test` in `workloads.tf` and run `terraform apply`
+Seed all three backup targets before running any backup jobs.
 
-### Test Steps
+### 3.1 Verify Linux VM Test Files
+
+The cloud-init script creates `/opt/ccc-testdata/sample.txt` and `workload.log`. Confirm they are present:
 
 ```powershell
-$vault = Get-AzRecoveryServicesVault -ResourceGroupName "rg-rsv-backup-nzn" -Name "rsv-ccc-backup-nzn-test"
-Set-AzRecoveryServicesVaultContext -Vault $vault
-
-# Upload test data
-$saCtx = New-AzStorageContext -StorageAccountName "stcccv6hqfn91" -UseConnectedAccount
-$tmpFile = New-TemporaryFile
-"CCC backup test data – $(Get-Date -Format 'o')" | Out-File $tmpFile
-Set-AzStorageFileContent -ShareName "ccc-test-share" -Source $tmpFile -Path "test-data.txt" -Context $saCtx
-
-# Trigger on-demand backup
-$container = Get-AzRecoveryServicesBackupContainer -ContainerType AzureStorage | Where-Object { $_.FriendlyName -like "*stcccv6hqfn91*" }
-$item    = Get-AzRecoveryServicesBackupItem -Container $container -WorkloadType AzureFiles
-$job     = Backup-AzRecoveryServicesBackupItem -Item $item -ExpiryDateTimeUTC (Get-Date).AddDays(30)
-Wait-AzRecoveryServicesBackupJob -Job $job -Timeout 1800
-
-# Verify recovery point
-Get-AzRecoveryServicesBackupRecoveryPoint -Item $item | Select-Object -First 5 | Select-Object RecoveryPointId, RecoveryPointType, RecoveryPointTime
+az vm run-command invoke `
+  --resource-group $RG --name $VMName `
+  --command-id RunShellScript `
+  --scripts "ls -lh /opt/ccc-testdata/ && cat /opt/ccc-testdata/sample.txt" `
+  --query "value[0].message" -o tsv
 ```
 
-| Step | Expected Result |
-|------|-----------------|
-| Upload test file | `test-data.txt` appears in the share |
-| Trigger on-demand backup | Job status = `Completed` |
-| Verify recovery point | At least 1 recovery point with `RecoveryPointType = FileSystem` |
+**Expected**: Directory listing shows `sample.txt` and `workload.log`; content begins with `=== CCC Azure Backup Test Workload ===`
 
----
+### 3.2 Add Extra Test Files on Linux VM
 
-## 5. Phase 3 – VM Backup Test (when NZN VM quota granted)
-
-### Pre-conditions
-- VM quota for `Standard_D2s_v5` (or equivalent) available in `NewZealandNorth`  
-  _(Currently `NotAvailableForSubscription` — see §6)_
-- Uncomment VM resources in `workloads.tf` and run `terraform apply`
-
-### Test Steps
+Creates a subfolder with additional files to exercise file-level restore depth:
 
 ```powershell
-$vault = Get-AzRecoveryServicesVault -ResourceGroupName "rg-rsv-backup-nzn" -Name "rsv-ccc-backup-nzn-test"
-Set-AzRecoveryServicesVaultContext -Vault $vault
-
-$vmContainer = Get-AzRecoveryServicesBackupContainer -ContainerType AzureVM | Where-Object { $_.FriendlyName -like "*vm-ccc-backup*" }
-$vmItem      = Get-AzRecoveryServicesBackupItem -Container $vmContainer -WorkloadType AzureVM
-$vmJob       = Backup-AzRecoveryServicesBackupItem -Item $vmItem -ExpiryDateTimeUTC (Get-Date).AddDays(7)
-Wait-AzRecoveryServicesBackupJob -Job $vmJob -Timeout 3600
-
-Get-AzRecoveryServicesBackupRecoveryPoint -Item $vmItem | Select-Object -First 5 | Select-Object RecoveryPointId, RecoveryPointType, RecoveryPointTime
+az vm run-command invoke `
+  --resource-group $RG --name $VMName `
+  --command-id RunShellScript `
+  --scripts 'mkdir -p /opt/ccc-testdata/subdir
+echo "Extra seed file – $(date -u +%Y-%m-%dT%H:%M:%SZ)" > /opt/ccc-testdata/extra1.txt
+cp /opt/ccc-testdata/sample.txt /opt/ccc-testdata/subdir/sample-copy.txt
+printf "Line1\nLine2\nLine3\n" > /opt/ccc-testdata/subdir/nested.txt
+ls -lhR /opt/ccc-testdata/' `
+  --query "value[0].message" -o tsv
 ```
 
-| Step | Expected Result |
-|------|-----------------|
-| Trigger on-demand VM backup | Job status = `Completed` |
-| Verify recovery point | At least 1 recovery point of type `CrashConsistent` or `AppConsistent` |
+**Expected**: `extra1.txt` and `subdir/` with two files listed.
+
+### 3.3 Upload Test Files to Azure File Share
+
+```powershell
+# Auth via shared key (enabled on this subscription)
+$key = (Get-AzStorageAccountKey -ResourceGroupName $RG -Name $SAName)[0].Value
+$ctx = New-AzStorageContext -StorageAccountName $SAName -StorageAccountKey $key
+
+# Create testdata directory in the share
+New-AzStorageDirectory -ShareName $Share -Path "testdata" -Context $ctx -ErrorAction SilentlyContinue
+
+# Seed file 1 – text content with timestamp
+$tmp1 = New-TemporaryFile
+"CCC Azure Backup – File Share Seed File`nTimestamp: $(Get-Date -Format 'o')`nWorkload: AzureFiles" |
+    Out-File $tmp1 -Encoding utf8
+Set-AzStorageFileContent -ShareName $Share -Source $tmp1 -Path "testdata/seed-file.txt" -Context $ctx -Force
+
+# Seed file 2 – CSV with 200 records
+1..200 | ForEach-Object { "Record $_,$(New-Guid),$(Get-Date -Format 'o')" } |
+    Out-File "$env:TEMP\records.csv" -Encoding utf8
+Set-AzStorageFileContent -ShareName $Share -Source "$env:TEMP\records.csv" -Path "testdata/records.csv" -Context $ctx -Force
+
+# Verify
+Get-AzStorageFile -ShareName $Share -Path "testdata" -Context $ctx | Get-AzStorageFile |
+    Select-Object Name, Length
+```
+
+**Expected**: `seed-file.txt` and `records.csv` listed under `testdata/`
+
+### 3.4 Create SQL Test Database and Seed Data
+
+Creates `CCCTestDB` on the SQL VM with 50 test rows. Commands run via the VM Run-Command extension — no Bastion or VPN required.
+
+```powershell
+# Step 1 – Create the database
+az vm run-command invoke `
+  --resource-group $RG --name $SQLVMName `
+  --command-id RunPowerShellScript `
+  --scripts 'sqlcmd -S localhost -E -Q "IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = ''CCCTestDB'') CREATE DATABASE CCCTestDB"'
+
+# Step 2 – Create table
+az vm run-command invoke `
+  --resource-group $RG --name $SQLVMName `
+  --command-id RunPowerShellScript `
+  --scripts 'sqlcmd -S localhost -E -d CCCTestDB -Q "IF OBJECT_ID(''dbo.BackupTestRecords'') IS NULL CREATE TABLE dbo.BackupTestRecords (Id INT IDENTITY PRIMARY KEY, RecordName NVARCHAR(100) NOT NULL, SeededAt DATETIME2 DEFAULT SYSUTCDATETIME(), Payload NVARCHAR(MAX))"'
+
+# Step 3 – Seed 50 rows and verify
+az vm run-command invoke `
+  --resource-group $RG --name $SQLVMName `
+  --command-id RunPowerShellScript `
+  --scripts 'sqlcmd -S localhost -E -d CCCTestDB -Q "DECLARE @i INT=1; WHILE @i<=50 BEGIN INSERT dbo.BackupTestRecords(RecordName,Payload) VALUES(CONCAT(''CCC-Record-'',FORMAT(@i,''000'')),CONCAT(''{\"index\":'',@i,''}''));SET @i=@i+1 END; SELECT COUNT(*) AS TotalRows FROM dbo.BackupTestRecords; SELECT TOP 3 Id,RecordName,SeededAt FROM dbo.BackupTestRecords"' `
+  --query "value[0].message" -o tsv
+```
+
+**Expected**: `TotalRows = 50`, top 3 rows show `CCC-Record-001`, `CCC-Record-002`, `CCC-Record-003`
 
 ---
 
-## 6. Sandbox Constraint Log
+## 4. Phase 1 – VM Backup & Restore
 
-The following Azure limitations were encountered in the `ME-MngEnvMCAP269331-shanshanqu-6` sandbox and are **not a defect in the Terraform code**:
+### 4.1 Trigger On-Demand VM Backup
 
-| # | Constraint | Impact | Resolution |
-|---|-----------|--------|------------|
-| C1 | **VM quota**: all VM SKUs return `NotAvailableForSubscription` in NZN for this sandbox | Cannot create test VMs → cannot test VM backup end-to-end | Request VM quota: Azure Portal → Subscriptions → Usage + Quotas → Request Increase |
-| C2 | **Storage key auth policy**: subscription policy enforces `allowSharedKeyAccess=false` | Azure Files backup requires key auth → cannot register file share with vault | Request policy exception for `stccc*` storage accounts, or wait for Azure Backup MSI-based file share support |
+```powershell
+$c    = Get-AzRecoveryServicesBackupContainer -ContainerType AzureVM -FriendlyName $VMName -VaultId $v.ID
+$item = Get-AzRecoveryServicesBackupItem -Container $c -WorkloadType AzureVM -VaultId $v.ID
+$job  = Backup-AzRecoveryServicesBackupItem -Item $item -ExpiryDateTimeUTC (Get-Date).AddDays(7) -VaultId $v.ID
+Wait-AzRecoveryServicesBackupJob -Job $job -Timeout 3600 -VaultId $v.ID
+$job | Select-Object Operation, Status, StartTime, EndTime
+```
 
-The Terraform code is correct and complete. The workload resources (VNet, subnet, NSG, storage account, file share) are fully deployed and will work once these constraints are resolved.
+**Expected**: `Status = Completed`
 
----
+### 4.2 Verify Recovery Point
 
-## 7. Portal Verification Checklist
+```powershell
+$rps = Get-AzRecoveryServicesBackupRecoveryPoint -Item $item -VaultId $v.ID
+$rps | Sort-Object RecoveryPointTime -Descending |
+    Select-Object -First 3 RecoveryPointId, RecoveryPointType, RecoveryPointTime
+```
 
-After automated validation, spot-check in the Azure Portal:
+**Expected**: At least 1 recovery point of type `CrashConsistent` or `AppConsistent`
 
-- [ ] **Vault → Backup items**: no unexpected items or error states
-- [ ] **Vault → Backup jobs**: no stuck or failed jobs
-- [ ] **Vault → Backup policies**: CCC-Policy, CCC-SQLPolicy, CCC-AzFiles-Policy visible with correct schedules
-- [ ] **Vault → Security settings**: Soft-delete enabled, immutability configured
-- [ ] **LAW → Logs**: `AddonAzureBackupJobs` table exists and is receiving data
-- [ ] **Monitor → Alerts**: All alert rules listed and enabled
-- [ ] **Monitor → Action groups**: Email addresses correct in both action groups
+### 4.3 File-Level Restore from VM Backup
 
----
+```powershell
+$rp   = $rps | Sort-Object RecoveryPointTime -Descending | Select-Object -First 1
+$disk = Get-AzRecoveryServicesBackupRPMountScript -RecoveryPoint $rp -VaultId $v.ID
+# Run the generated script locally to mount the recovery volume
+# Browse to /opt/ccc-testdata/ and confirm sample.txt, extra1.txt, and subdir/ are present
+```
 
-## 8. Restore Test Plan (production only)
-
-Once Phase 2 or Phase 3 backups succeed, perform at minimum one restore:
-
-### Azure Files Restore
-1. Azure Portal → `rsv-ccc-backup-nzn-test` → Backup items → Azure Storage → `ccc-test-share`
-2. Click **Restore Files** → select the latest recovery point
-3. Restore `test-data.txt` to an alternate location
-4. **Expected**: file content matches original upload
-
-### VM Restore (File-Level)
-1. Azure Portal → `rsv-ccc-backup-nzn-test` → Backup items → Azure Virtual Machine → `vm-ccc-backup-nzn-test-01`
-2. Click **File Recovery** → Mount the recovery point as a network share
-3. Browse `/opt/ccc-testdata/sample.txt`
-4. **Expected**: file content contains `CCC Azure Backup Test Workload`
+**Expected**: `/opt/ccc-testdata/sample.txt` contains `=== CCC Azure Backup Test Workload ===`; `extra1.txt` and `subdir/nested.txt` from Phase 0.2 are also visible.
 
 ---
 
-## 9. Pass/Fail Criteria
+## 5. Phase 2 – Azure Files Backup & Restore
 
-| Criterion | Required for Pass |
-|-----------|------------------|
-| Infrastructure validation (Phase 1) | All TC01–TC08 PASS |
-| No Terraform drift | `terraform plan` exits with code 0 |
-| Azure Files backup (Phase 2) | Job status = Completed; ≥1 recovery point (when sandbox policy allows) |
-| VM backup (Phase 3) | Job status = Completed; ≥1 recovery point (when NZN quota allows) |
-| Restore test | File content matches original (when backup phases complete) |
+File share backup protection is now configured by Terraform (`azurerm_backup_protected_file_share`). No Portal step is required.
+
+### 5.1 Trigger On-Demand File Share Backup
+
+```powershell
+$sc   = Get-AzRecoveryServicesBackupContainer -ContainerType AzureStorage -VaultId $v.ID |
+            Where-Object { $_.FriendlyName -like "*$SAName*" }
+$item = Get-AzRecoveryServicesBackupItem -Container $sc -WorkloadType AzureFiles -VaultId $v.ID |
+            Where-Object { $_.FriendlyName -eq $Share }
+$job  = Backup-AzRecoveryServicesBackupItem -Item $item -ExpiryDateTimeUTC (Get-Date).AddDays(30) -VaultId $v.ID
+Wait-AzRecoveryServicesBackupJob -Job $job -Timeout 1800 -VaultId $v.ID
+$job | Select-Object Operation, Status, StartTime, EndTime
+```
+
+**Expected**: `Status = Completed`
+
+### 5.2 Restore a Single File to an Alternate Folder
+
+```powershell
+$rps = Get-AzRecoveryServicesBackupRecoveryPoint -Item $item -VaultId $v.ID
+$rp  = $rps | Sort-Object RecoveryPointTime -Descending | Select-Object -First 1
+
+Restore-AzRecoveryServicesBackupItem `
+  -RecoveryPoint               $rp `
+  -StorageAccountName          $SAName `
+  -StorageAccountResourceGroupName $RG `
+  -ResolveConflict             Overwrite `
+  -SourceFilePath              "testdata/seed-file.txt" `
+  -SourceFileType              File `
+  -TargetStorageAccountName    $SAName `
+  -TargetFileShareName         $Share `
+  -TargetFolder                "restored" `
+  -VaultId                     $v.ID
+```
+
+**Expected**: `testdata/seed-file.txt` is restored to `restored/seed-file.txt` in the same share with matching content.
+
+Verify:
+
+```powershell
+$key = (Get-AzStorageAccountKey -ResourceGroupName $RG -Name $SAName)[0].Value
+$ctx = New-AzStorageContext -StorageAccountName $SAName -StorageAccountKey $key
+Get-AzStorageFile -ShareName $Share -Path "restored" -Context $ctx | Get-AzStorageFile |
+    Select-Object Name, Length
+```
+
+---
+
+## 6. Phase 3 – SQL Database Backup & Restore
+
+The `azurerm_mssql_virtual_machine` resource already registers the SQL IaaS extension. The steps below register the VM as a workload container, discover the SQL databases, enable protection, and run an on-demand backup.
+
+### 6.1 Register SQL Workload Container
+
+```powershell
+$sqlVMId = az vm show -g $RG -n $SQLVMName --query id -o tsv
+
+# Register the SQL VM as an AzureVMAppContainer in the vault
+Register-AzRecoveryServicesBackupContainer `
+  -ResourceId            $sqlVMId `
+  -BackupManagementType  AzureWorkload `
+  -WorkloadType          SQLDataBase `
+  -VaultId               $v.ID `
+  -Force
+
+# Confirm registration
+$sc = Get-AzRecoveryServicesBackupContainer `
+        -ContainerType AzureVMAppContainer `
+        -VaultId       $v.ID |
+        Where-Object { $_.FriendlyName -like "*$SQLVMName*" }
+$sc | Select-Object FriendlyName, Status
+```
+
+**Expected**: Container listed with `Status = Registered`
+
+### 6.2 Discover SQL Databases
+
+```powershell
+# Trigger discovery — detects all SQL instances and DBs on the registered VM
+Initialize-AzRecoveryServicesBackupProtectableItem `
+  -WorkloadType SQLDataBase -VaultId $v.ID -Container $sc
+
+$protectableItems = Get-AzRecoveryServicesBackupProtectableItem `
+  -WorkloadType SQLDataBase -ItemType SQLDataBase -VaultId $v.ID |
+  Where-Object { $_.ParentContainerFriendlyName -like "*$SQLVMName*" }
+
+$protectableItems | Select-Object FriendlyName, Name, ParentContainerFriendlyName
+```
+
+**Expected**: `CCCTestDB` appears in the list (alongside system DBs like `master`, `model`, `msdb`).
+
+### 6.3 Enable SQL DB Protection
+
+```powershell
+$dbItem  = $protectableItems | Where-Object { $_.FriendlyName -eq "CCCTestDB" }
+$sqlPolicy = Get-AzRecoveryServicesBackupProtectionPolicy -Name "CCC-SQL-Workload-Policy" -VaultId $v.ID
+
+Enable-AzRecoveryServicesBackupProtection `
+  -ProtectableItem $dbItem `
+  -Policy          $sqlPolicy `
+  -VaultId         $v.ID
+```
+
+**Expected**: Protection is enabled; the DB appears in backup items with `ProtectionState = IRPending` (initial backup pending).
+
+### 6.4 Trigger On-Demand SQL Full Backup
+
+```powershell
+$sqlItem = Get-AzRecoveryServicesBackupItem `
+  -WorkloadType         SQLDataBase `
+  -BackupManagementType AzureWorkload `
+  -VaultId              $v.ID |
+  Where-Object { $_.FriendlyName -eq "CCCTestDB" }
+
+$job = Backup-AzRecoveryServicesBackupItem `
+  -Item                $sqlItem `
+  -BackupType          Full `
+  -ExpiryDateTimeUTC   (Get-Date).AddDays(7) `
+  -VaultId             $v.ID
+
+Wait-AzRecoveryServicesBackupJob -Job $job -Timeout 3600 -VaultId $v.ID
+$job | Select-Object Operation, Status, StartTime, EndTime
+```
+
+**Expected**: `Status = Completed`
+
+### 6.5 Verify SQL Recovery Point
+
+```powershell
+$sqlRPs = Get-AzRecoveryServicesBackupRecoveryPoint -Item $sqlItem -VaultId $v.ID
+$sqlRPs | Sort-Object RecoveryPointTime -Descending |
+    Select-Object -First 3 RecoveryPointId, RecoveryPointType, RecoveryPointTime
+```
+
+**Expected**: At least 1 recovery point of type `Full`
+
+### 6.6 Restore SQL Database to a New Database
+
+```powershell
+$rp = $sqlRPs | Sort-Object RecoveryPointTime -Descending | Select-Object -First 1
+
+# Build a restore config targeting the same SQL instance, alternate DB name
+$restoreConfig = Get-AzRecoveryServicesBackupWorkloadRecoveryConfig `
+  -RecoveryPoint          $rp `
+  -TargetItem             $sqlItem `
+  -AlternateWorkloadRestore `
+  -VaultId                $v.ID
+
+$restoreConfig.RestoredDBName     = "CCCTestDB_Restored"
+$restoreConfig.OverwriteWLIfpresent = $true
+
+$restoreJob = Restore-AzRecoveryServicesBackupItem `
+  -WLRecoveryConfig $restoreConfig `
+  -VaultId          $v.ID
+
+Wait-AzRecoveryServicesBackupJob -Job $restoreJob -Timeout 3600 -VaultId $v.ID
+$restoreJob | Select-Object Operation, Status, StartTime, EndTime
+```
+
+**Expected**: `Status = Completed`
+
+### 6.7 Verify Restored Database
+
+```powershell
+az vm run-command invoke `
+  --resource-group $RG --name $SQLVMName `
+  --command-id RunPowerShellScript `
+  --scripts 'sqlcmd -S localhost -E -d CCCTestDB_Restored -Q "SELECT COUNT(*) AS RestoredRows FROM dbo.BackupTestRecords; SELECT TOP 3 Id,RecordName,SeededAt FROM dbo.BackupTestRecords"' `
+  --query "value[0].message" -o tsv
+```
+
+**Expected**: `RestoredRows = 50`, top 3 rows match the original seed data.
+
+---
+
+## 7. Phase 4 – Alert Trigger Tests
+
+All alerts send email to `shanshanqu@microsoft.com`.
+
+### 7.1 Failed Backup Job Alert (Sev1)
+
+Deallocate the VM then immediately trigger an on-demand backup — it will fail with `UserErrorVmNotInDesirableState`:
+
+```powershell
+az vm deallocate --resource-group $RG --name $VMName
+
+$c    = Get-AzRecoveryServicesBackupContainer -ContainerType AzureVM -FriendlyName $VMName -VaultId $v.ID
+$item = Get-AzRecoveryServicesBackupItem -Container $c -WorkloadType AzureVM -VaultId $v.ID
+Backup-AzRecoveryServicesBackupItem -Item $item -ExpiryDateTimeUTC (Get-Date).AddDays(1) -VaultId $v.ID
+
+# Restart VM after confirming the alert email is received
+az vm start --resource-group $RG --name $VMName
+```
+
+**Expected email**: Subject contains `Fired: alert-rsv-ccc-backup-nzn-test-failed-jobs` within ~30 minutes.
+
+### 7.2 Backup Health Event Alert (Sev1)
+
+Stop the VM, trigger backup to generate a health event, then restart:
+
+```powershell
+az vm stop --resource-group $RG --name $VMName
+
+$c    = Get-AzRecoveryServicesBackupContainer -ContainerType AzureVM -FriendlyName $VMName -VaultId $v.ID
+$item = Get-AzRecoveryServicesBackupItem -Container $c -WorkloadType AzureVM -VaultId $v.ID
+Backup-AzRecoveryServicesBackupItem -Item $item -ExpiryDateTimeUTC (Get-Date).AddDays(1) -VaultId $v.ID
+
+az vm start --resource-group $RG --name $VMName
+```
+
+**Expected email**: Alert for backup health degradation within ~15 minutes.
+
+### 7.3 Vault Delete Alert (Sev2 — Admin/Security)
+
+Initiate (but not complete) a vault delete — the activity log alert fires on the attempt, not the outcome:
+
+```powershell
+# This will fail because the vault is not empty — that is intentional.
+az backup vault delete --resource-group $RG --name $Vault --yes 2>&1
+```
+
+**Expected email**: Subject contains `alert-rsv-ccc-backup-nzn-test-admin-delete` within ~5 minutes.
+
+### 7.4 Security PIN Retrieval Alert (Sev2 — Admin/Security)
+
+```powershell
+az rest --method POST `
+  --uri "https://management.azure.com/subscriptions/$Sub/resourceGroups/$RG/providers/Microsoft.RecoveryServices/vaults/$Vault/backupSecurityPin/action?api-version=2023-04-01"
+```
+
+**Expected email**: Subject contains `alert-rsv-ccc-backup-nzn-test-admin-security-pin` within ~5 minutes.
+
+---
+
+## 8. Alert Expected Email Summary
+
+| Alert | Trigger | Expected within |
+|-------|---------|----------------|
+| Failed backup jobs | VM deallocated, backup job fails | 30 min |
+| Backup health event | VM stopped during backup cycle | 15 min |
+| Vault delete attempt | `az backup vault delete` | 5 min |
+| Security PIN retrieval | `backupSecurityPin/action` API call | 5 min |
+| Resource health change | Azure platform degrades vault | Platform-driven |
+
+| Storage per-item threshold | Item exceeds 500 GB | Daily evaluation |
+| Storage total threshold | Vault exceeds 1 TB | Daily evaluation |
+
+---
+
+## 7. Pass / Fail Criteria
+
+| Test | Pass Condition |
+|------|---------------|
+| VM on-demand backup | Job `Status = Completed`, ≥1 recovery point |
+| VM file-level restore | Target file accessible with correct content |
+| Azure Files on-demand backup | Job `Status = Completed`, ≥1 recovery point |
+| Azure Files restore | Restored file present in `restored/` folder |
+| Failed job alert | Email received within 30 min |
+| Backup health alert | Email received within 15 min |
+| Vault delete alert | Email received within 5 min |
+| Security PIN alert | Email received within 5 min |
