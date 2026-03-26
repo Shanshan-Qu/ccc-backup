@@ -1,16 +1,21 @@
 <#
 .SYNOPSIS
-    CCC Azure Backup smoke test – triggers on-demand backups, uploads test data
-    to the file share, and validates that all backup jobs complete successfully.
+    CCC Azure Backup smoke test – seeds test data, triggers on-demand backups
+    for Azure Files, Linux VM, and SQL Server, and validates all jobs complete.
 
 .DESCRIPTION
     Runs through the following steps automatically:
-      1. Ensure Az PowerShell modules are present.
-      2. Authenticate and set context to the target subscription.
-      3. Upload a test file to the Azure File Share.
-      4. Trigger on-demand backup for the file share and the non-prod VM.
-      5. Wait for all jobs to complete (timeout: 30 minutes each).
-      6. Print a pass/fail summary.
+      1.  Ensure Az PowerShell modules are present.
+      2.  Authenticate and set context to the target subscription.
+      3.  Seed test data: upload files to the Azure File Share.
+      4.  Seed test data: create CCCTestDB on the SQL VM with 50 rows.
+      5.  Trigger on-demand backup for the file share.
+      6.  Trigger on-demand backup for the non-prod Linux VM.
+      7.  Register the SQL VM workload container and enable DB protection.
+      8.  Trigger on-demand full backup for CCCTestDB.
+      9.  Wait for all jobs to complete (timeout: 60 min each).
+      10. Verify recovery points exist for each workload.
+      11. Print a pass/fail summary.
 
 .PARAMETER SubscriptionId
     The Azure subscription ID. Defaults to the CCC test subscription.
@@ -44,7 +49,8 @@ param(
     [string] $VaultName         = "rsv-ccc-backup-nzn-test",
     [string] $StorageAccountName = "",   # populated from terraform output if empty
     [string] $FileShareName      = "ccc-test-share",
-    [string] $VmName             = ""    # populated from terraform output if empty
+    [string] $VmName             = "",   # populated from terraform output if empty
+    [string] $SqlVmName          = ""    # populated from terraform output if empty
 )
 
 Set-StrictMode -Version Latest
@@ -108,7 +114,7 @@ try {
 # Step 2b – Resolve resource names from terraform output if needed
 # ──────────────────────────────────────────────────────────────
 
-if ([string]::IsNullOrEmpty($StorageAccountName) -or [string]::IsNullOrEmpty($VmName)) {
+if ([string]::IsNullOrEmpty($StorageAccountName) -or [string]::IsNullOrEmpty($VmName) -or [string]::IsNullOrEmpty($SqlVmName)) {
     Write-Info "Reading terraform outputs to resolve resource names ..."
     $tfOutputRaw = terraform output -json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
     if ($null -ne $tfOutputRaw) {
@@ -121,9 +127,14 @@ if ([string]::IsNullOrEmpty($StorageAccountName) -or [string]::IsNullOrEmpty($Vm
     }
 }
 
+if ([string]::IsNullOrEmpty($SqlVmName) -and $null -ne $tfOutputRaw) {
+    $SqlVmName = $tfOutputRaw.sql_vm_name.value
+}
+
 Write-Info "Storage account : $StorageAccountName"
 Write-Info "File share      : $FileShareName"
 Write-Info "VM name         : $VmName"
+Write-Info "SQL VM name     : $SqlVmName"
 
 # ──────────────────────────────────────────────────────────────
 # Step 3 – Upload test data to the Azure File Share
@@ -165,6 +176,48 @@ try {
     Write-TestResult "TC001" "PASS" "Test file uploaded to $FileShareName/backup-test/"
 } catch {
     Write-TestResult "TC001" "FAIL" "Upload failed: $_"
+}
+
+# ──────────────────────────────────────────────────────────────
+# Step 3b – Seed CCCTestDB on the SQL VM
+# ──────────────────────────────────────────────────────────────
+
+Write-Step "TC002-SQL-Seed – Creating CCCTestDB and seeding 50 rows on SQL VM '$SqlVmName'"
+
+try {
+    if ([string]::IsNullOrEmpty($SqlVmName)) {
+        Write-TestResult "TC002-SQL-Seed" "FAIL" "SqlVmName is empty – pass -SqlVmName or ensure terraform output sql_vm_name is set."
+    } else {
+        # Create database
+        $createDbScript = 'sqlcmd -S localhost -E -Q "IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = ''''CCCTestDB'''') CREATE DATABASE CCCTestDB"'
+        az vm run-command invoke `
+            --resource-group $ResourceGroup --name $SqlVmName `
+            --command-id RunPowerShellScript `
+            --scripts $createDbScript | Out-Null
+
+        # Create table
+        $createTableScript = 'sqlcmd -S localhost -E -d CCCTestDB -Q "IF OBJECT_ID(''''dbo.BackupTestRecords'''') IS NULL CREATE TABLE dbo.BackupTestRecords (Id INT IDENTITY PRIMARY KEY, RecordName NVARCHAR(100) NOT NULL, SeededAt DATETIME2 DEFAULT SYSUTCDATETIME(), Payload NVARCHAR(MAX))"'
+        az vm run-command invoke `
+            --resource-group $ResourceGroup --name $SqlVmName `
+            --command-id RunPowerShellScript `
+            --scripts $createTableScript | Out-Null
+
+        # Seed 50 rows and verify
+        $seedScript = 'sqlcmd -S localhost -E -d CCCTestDB -Q "DECLARE @i INT=1; WHILE @i<=50 BEGIN INSERT dbo.BackupTestRecords(RecordName,Payload) VALUES(CONCAT(''''CCC-Record-'''',FORMAT(@i,''''000'''')),CONCAT(''''{""index"":'''',@i,''''}''''''));SET @i=@i+1 END; SELECT COUNT(*) AS TotalRows FROM dbo.BackupTestRecords"'
+        $seedResult = az vm run-command invoke `
+            --resource-group $ResourceGroup --name $SqlVmName `
+            --command-id RunPowerShellScript `
+            --scripts $seedScript `
+            --query "value[0].message" -o tsv 2>&1
+
+        if ($seedResult -match 'TotalRows') {
+            Write-TestResult "TC002-SQL-Seed" "PASS" "CCCTestDB created and seeded. Output: $($seedResult -replace '`n',' ')"
+        } else {
+            Write-TestResult "TC002-SQL-Seed" "FAIL" "Unexpected seed output: $seedResult"
+        }
+    }
+} catch {
+    Write-TestResult "TC002-SQL-Seed" "FAIL" "SQL seeding failed: $_"
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -279,6 +332,75 @@ $r5 = Wait-BackupJob -Job $vmJob   -Label "VM"
 Write-TestResult "TC005" $r5.Status $r5.Detail
 
 # ──────────────────────────────────────────────────────────────
+# Step 7b – Register SQL workload container, enable protection,
+#            and trigger on-demand SQL full backup
+# ──────────────────────────────────────────────────────────────
+
+Write-Step "TC006-SQL – Registering SQL VM workload container and triggering SQL backup"
+
+$sqlJob = $null
+try {
+    if ([string]::IsNullOrEmpty($SqlVmName)) {
+        Write-TestResult "TC006-SQL" "FAIL" "SqlVmName is empty – skipping SQL backup steps."
+    } else {
+        # Register the SQL VM as an AzureVMAppContainer
+        $sqlVmId = az vm show -g $ResourceGroup -n $SqlVmName --query id -o tsv
+        Register-AzRecoveryServicesBackupContainer `
+            -ResourceId           $sqlVmId `
+            -BackupManagementType AzureWorkload `
+            -WorkloadType         SQLDataBase `
+            -VaultId              $vault.ID `
+            -Force | Out-Null
+
+        # Discover SQL databases
+        $sqlContainer = Get-AzRecoveryServicesBackupContainer `
+            -ContainerType AzureVMAppContainer `
+            -VaultId       $vault.ID |`
+            Where-Object { $_.FriendlyName -like "*$SqlVmName*" }
+
+        if ($null -eq $sqlContainer) {
+            Write-TestResult "TC006-SQL" "FAIL" "SQL VM container not found after registration."
+        } else {
+            Initialize-AzRecoveryServicesBackupProtectableItem `
+                -WorkloadType SQLDataBase -VaultId $vault.ID -Container $sqlContainer | Out-Null
+
+            $dbItem = Get-AzRecoveryServicesBackupProtectableItem `
+                -WorkloadType SQLDataBase -ItemType SQLDataBase -VaultId $vault.ID |`
+                Where-Object { $_.ParentContainerFriendlyName -like "*$SqlVmName*" -and $_.FriendlyName -eq "CCCTestDB" }
+
+            if ($null -eq $dbItem) {
+                Write-TestResult "TC006-SQL" "FAIL" "CCCTestDB not discovered on '$SqlVmName'. Ensure the database was seeded and the SQL IaaS extension is registered."
+            } else {
+                # Enable protection
+                $sqlPolicy = Get-AzRecoveryServicesBackupProtectionPolicy `
+                    -Name "CCC-SQL-Workload-Policy" -VaultId $vault.ID
+                Enable-AzRecoveryServicesBackupProtection `
+                    -ProtectableItem $dbItem -Policy $sqlPolicy -VaultId $vault.ID | Out-Null
+
+                # Trigger on-demand full backup
+                $sqlItem = Get-AzRecoveryServicesBackupItem `
+                    -WorkloadType SQLDataBase -BackupManagementType AzureWorkload `
+                    -VaultId $vault.ID |`
+                    Where-Object { $_.FriendlyName -eq "CCCTestDB" }
+
+                $sqlJob = Backup-AzRecoveryServicesBackupItem `
+                    -Item $sqlItem -BackupType Full `
+                    -ExpiryDateTimeUTC (Get-Date).ToUniversalTime().AddDays(7) `
+                    -VaultId $vault.ID
+                Write-TestResult "TC006-SQL" "PASS" "SQL full backup triggered – Job ID: $($sqlJob.JobId)"
+            }
+        }
+    }
+} catch {
+    Write-TestResult "TC006-SQL" "FAIL" "SQL backup setup failed: $_"
+}
+
+# Wait for SQL job
+Write-Step "TC007-SQL – Waiting for SQL backup job to complete (timeout: 60 min)"
+$r7 = Wait-BackupJob -Job $sqlJob -Label "SQLFullBackup" -TimeoutMinutes 60
+Write-TestResult "TC007-SQL" $r7.Status $r7.Detail
+
+# ──────────────────────────────────────────────────────────────
 # Step 8 – Verify recovery points exist
 # ──────────────────────────────────────────────────────────────
 
@@ -323,6 +445,31 @@ try {
     }
 } catch {
     Write-TestResult "TC007" "FAIL" "Error checking VM recovery points: $_"
+}
+
+# SQL recovery points
+try {
+    if (-not [string]::IsNullOrEmpty($SqlVmName)) {
+        $sqlItem2 = Get-AzRecoveryServicesBackupItem `
+            -WorkloadType SQLDataBase -BackupManagementType AzureWorkload `
+            -VaultId $vault.ID |`
+            Where-Object { $_.FriendlyName -eq "CCCTestDB" }
+
+        if ($null -ne $sqlItem2) {
+            $sqlRps = Get-AzRecoveryServicesBackupRecoveryPoint -Item $sqlItem2 -VaultId $vault.ID
+            if ($sqlRps.Count -gt 0) {
+                Write-TestResult "TC008" "PASS" "CCCTestDB has $($sqlRps.Count) recovery point(s). Latest: $($sqlRps[0].RecoveryPointTime)"
+            } else {
+                Write-TestResult "TC008" "FAIL" "No recovery points found for CCCTestDB."
+            }
+        } else {
+            Write-TestResult "TC008" "FAIL" "CCCTestDB backup item not found – SQL backup may not have completed."
+        }
+    } else {
+        Write-TestResult "TC008" "FAIL" "SqlVmName is empty – SQL recovery point check skipped."
+    }
+} catch {
+    Write-TestResult "TC008" "FAIL" "Error checking SQL recovery points: $_"
 }
 
 # ──────────────────────────────────────────────────────────────
