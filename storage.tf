@@ -1,3 +1,8 @@
+# Current deployer identity — used to grant file-data RBAC so the test script can upload files
+# (storage_use_azuread = true in the provider forces allow_shared_key_access = false,
+#  so OAuth RBAC is the only way to upload files from scripts)
+data "azurerm_client_config" "current" {}
+
 module "files_storage" {
   source  = "Azure/avm-res-storage-storageaccount/azurerm"
   version = "~> 0.2"
@@ -20,6 +25,10 @@ module "files_storage" {
     bms_backup_contributor = {
       role_definition_id_or_name = "Storage Account Backup Contributor"
       principal_id               = "1de5ba0f-6130-42ed-8bcf-1f5ecca84aec" # Backup Management Service SPN
+    }
+    current_user_file_contributor = {
+      role_definition_id_or_name = "Storage File Data Privileged Contributor"
+      principal_id               = data.azurerm_client_config.current.object_id
     }
   }
 

@@ -40,10 +40,24 @@ resource "azurerm_backup_protected_vm" "nonprod" {
   depends_on = [module.nonprod_vm]
 }
 
-# SQL IaaS extension — enables workload-level backup discovery in the vault
+resource "random_password" "sql_admin" {
+  length           = 16
+  special          = true
+  override_special = "!#$%&*()-_=+[]{}<>:?"
+  min_upper        = 2
+  min_lower        = 2
+  min_numeric      = 2
+  min_special      = 2
+}
+
+# SQL IaaS extension — enables workload-level backup discovery in the vault.
+# sql_connectivity_update_username/password creates a SQL sysadmin login so
+# the test script can seed CCCTestDB without relying on SYSTEM having sysadmin.
 resource "azurerm_mssql_virtual_machine" "sql" {
-  virtual_machine_id = module.sql_vm.resource_id
-  sql_license_type   = "PAYG"
+  virtual_machine_id               = module.sql_vm.resource_id
+  sql_license_type                 = "PAYG"
+  sql_connectivity_update_username = "ccc_sqladmin"
+  sql_connectivity_update_password = random_password.sql_admin.result
 
   depends_on = [module.sql_vm]
 }

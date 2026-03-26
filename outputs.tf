@@ -94,3 +94,14 @@ output "sql_vm_admin_password" {
   value       = module.sql_vm.admin_password
   sensitive   = true
 }
+
+output "sql_admin_login" {
+  description = "SQL Server sysadmin login created by the IaaS extension (used by the test script)."
+  value       = "ccc_sqladmin"
+}
+
+output "sql_admin_password" {
+  description = "SQL Server sysadmin login password (sensitive)."
+  value       = random_password.sql_admin.result
+  sensitive   = true
+}

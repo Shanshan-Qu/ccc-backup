@@ -143,6 +143,10 @@ if ([string]::IsNullOrEmpty($SqlVmName) -and $null -ne $tfOutputRaw) {
     $SqlVmName = $tfOutputRaw.sql_vm_name.value
 }
 
+# Resolve SQL admin credentials from Terraform output (set by azurerm_mssql_virtual_machine)
+$SqlAdminLogin    = if ($null -ne $tfOutputRaw) { $tfOutputRaw.sql_admin_login.value }    else { "ccc_sqladmin" }
+$SqlAdminPassword = if ($null -ne $tfOutputRaw) { & $tfExe output -raw sql_admin_password 2>$null } else { "" }
+
 Write-Info "Storage account : $StorageAccountName"
 Write-Info "File share      : $FileShareName"
 Write-Info "VM name         : $VmName"
@@ -202,13 +206,13 @@ try {
     } else {
         # Write SQL seeding script to a temp file so quoting is not an issue
         $sqlSeedScript = Join-Path $env:TEMP "ccc-sql-seed-$([System.Guid]::NewGuid()).ps1"
-        @'
-sqlcmd -S localhost -E -Q "IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'CCCTestDB') CREATE DATABASE CCCTestDB"
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-sqlcmd -S localhost -E -d CCCTestDB -Q "IF OBJECT_ID('dbo.BackupTestRecords') IS NULL CREATE TABLE dbo.BackupTestRecords (Id INT IDENTITY PRIMARY KEY, RecordName NVARCHAR(100) NOT NULL, SeededAt DATETIME2 DEFAULT SYSUTCDATETIME(), Payload NVARCHAR(MAX))"
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-sqlcmd -S localhost -E -d CCCTestDB -Q "DECLARE @i INT=1; WHILE @i<=50 BEGIN INSERT dbo.BackupTestRecords(RecordName,Payload) VALUES(CONCAT('CCC-Record-',FORMAT(@i,'000')),CONCAT('{"index":',@i,'}'));SET @i=@i+1 END; SELECT COUNT(*) AS TotalRows FROM dbo.BackupTestRecords"
-'@ | Set-Content $sqlSeedScript -Encoding UTF8
+        @"
+sqlcmd -S localhost -U $SqlAdminLogin -P "$SqlAdminPassword" -Q "IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'CCCTestDB') CREATE DATABASE CCCTestDB"
+if (\$LASTEXITCODE -ne 0) { exit \$LASTEXITCODE }
+sqlcmd -S localhost -U $SqlAdminLogin -P "$SqlAdminPassword" -d CCCTestDB -Q "IF OBJECT_ID('dbo.BackupTestRecords') IS NULL CREATE TABLE dbo.BackupTestRecords (Id INT IDENTITY PRIMARY KEY, RecordName NVARCHAR(100) NOT NULL, SeededAt DATETIME2 DEFAULT SYSUTCDATETIME(), Payload NVARCHAR(MAX))"
+if (\$LASTEXITCODE -ne 0) { exit \$LASTEXITCODE }
+sqlcmd -S localhost -U $SqlAdminLogin -P "$SqlAdminPassword" -d CCCTestDB -Q "DECLARE @i INT=1; WHILE @i<=50 BEGIN INSERT dbo.BackupTestRecords(RecordName,Payload) VALUES(CONCAT('CCC-Record-',FORMAT(@i,'000')),CONCAT('{""index"":',@i,'}'));SET @i=@i+1 END; SELECT COUNT(*) AS TotalRows FROM dbo.BackupTestRecords"
+"@ | Set-Content $sqlSeedScript -Encoding UTF8
 
         $seedResult = Invoke-AzVMRunCommand `
             -ResourceGroupName $ResourceGroup `
@@ -422,7 +426,7 @@ try {
         -Container $storageContainer2 -WorkloadType AzureFiles |
         Where-Object { $_.FriendlyName -like "*$FileShareName*" }
 
-    $rps = Get-AzRecoveryServicesBackupRecoveryPoint -Item $filesItem2
+    $rps = @(Get-AzRecoveryServicesBackupRecoveryPoint -Item $filesItem2)
 
     if ($rps.Count -gt 0) {
         Write-TestResult "TC006" "PASS" "File share has $($rps.Count) recovery point(s). Latest: $($rps[0].RecoveryPointTime)"
@@ -442,7 +446,7 @@ try {
     $vmItem2 = Get-AzRecoveryServicesBackupItem `
         -Container $vmContainer2 -WorkloadType AzureVM
 
-    $vmRps = Get-AzRecoveryServicesBackupRecoveryPoint -Item $vmItem2
+    $vmRps = @(Get-AzRecoveryServicesBackupRecoveryPoint -Item $vmItem2)
 
     if ($vmRps.Count -gt 0) {
         Write-TestResult "TC007" "PASS" "VM has $($vmRps.Count) recovery point(s). Latest: $($vmRps[0].RecoveryPointTime)"
@@ -462,7 +466,7 @@ try {
             Where-Object { $_.FriendlyName -eq "CCCTestDB" }
 
         if ($null -ne $sqlItem2) {
-            $sqlRps = Get-AzRecoveryServicesBackupRecoveryPoint -Item $sqlItem2 -VaultId $vault.ID
+            $sqlRps = @(Get-AzRecoveryServicesBackupRecoveryPoint -Item $sqlItem2 -VaultId $vault.ID)
             if ($sqlRps.Count -gt 0) {
                 Write-TestResult "TC008" "PASS" "CCCTestDB has $($sqlRps.Count) recovery point(s). Latest: $($sqlRps[0].RecoveryPointTime)"
             } else {
