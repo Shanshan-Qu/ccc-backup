@@ -22,10 +22,6 @@ module "log_analytics_workspace" {
   depends_on = [module.resource_group]
 }
 
-# VNet/Subnet stay as raw resources (networking.tf): the VNet AVM >= 0.7
-# switched internally to azapi_resource, making state migration impossible
-# without a destroy/recreate cycle.
-
 module "workload_nsg" {
   source  = "Azure/avm-res-network-networksecuritygroup/azurerm"
   version = "~> 0.2"
@@ -88,10 +84,6 @@ module "files_storage" {
   shared_access_key_enabled       = false
   tags                            = local.tags
 
-  # File share is managed as a raw resource in networking.tf.
-  # The storage AVM >= 0.4 uses azapi_resource for shares internally,
-  # which is incompatible with the existing azurerm_storage_share state entry.
-
   role_assignments = {
     vault_backup_contributor = {
       role_definition_id_or_name = "Storage Account Backup Contributor"
@@ -150,7 +142,7 @@ module "nonprod_vm" {
         primary = {
           name                          = "internal"
           private_ip_address_allocation = "Dynamic"
-          private_ip_subnet_resource_id = azurerm_subnet.workload.id
+          private_ip_subnet_resource_id = module.workload_vnet.subnets["workload"].resource_id
         }
       }
     }
@@ -169,7 +161,7 @@ module "nonprod_vm" {
   CLOUDINIT
   )
 
-  depends_on = [module.resource_group, azurerm_subnet.workload]
+  depends_on = [module.resource_group, module.workload_vnet]
 }
 
 # SQL Server 2022 Developer on Windows Server 2022
@@ -215,13 +207,13 @@ module "sql_vm" {
         primary = {
           name                          = "internal"
           private_ip_address_allocation = "Dynamic"
-          private_ip_subnet_resource_id = azurerm_subnet.workload.id
+          private_ip_subnet_resource_id = module.workload_vnet.subnets["workload"].resource_id
         }
       }
     }
   }
 
-  depends_on = [module.resource_group, azurerm_subnet.workload]
+  depends_on = [module.resource_group, module.workload_vnet]
 }
 
 # Recovery Services Vault
@@ -233,27 +225,11 @@ module "recovery_services_vault" {
   location            = var.location
   resource_group_name = module.resource_group.name
 
-  # ── SKU ─────────────────────────────────────────────────────
-  sku = "Standard"
-
-  # ── Storage redundancy ──────────────────────────────────────
-  # Non-prod: LRS (reduces cost).  Prod would be ZRS or GRS.
-  storage_mode_type = "LocallyRedundant"
-
-  # CRR requires GRS; not applicable for LRS vaults.
-  cross_region_restore_enabled = false
-
-  # ── Soft Delete ─────────────────────────────────────────────
-  # Spec mandates soft delete as a baseline for all vaults.
-  soft_delete_enabled = true
-
-  # ── Immutability ────────────────────────────────────────────
-  # Unlocked = protection is active but admin can still lock/disable.
-  # Disabled by default for non-prod; toggle with enable_immutability.
-  immutability = var.enable_immutability ? "Unlocked" : "Disabled"
-
-  # ── Network ─────────────────────────────────────────────────
-  # Disable public access; vault is reachable only via private endpoint.
+  sku                           = "Standard"
+  storage_mode_type             = "LocallyRedundant"
+  cross_region_restore_enabled  = false
+  soft_delete_enabled           = true
+  immutability                  = var.enable_immutability ? "Unlocked" : "Disabled"
   public_network_access_enabled = false
 
   private_endpoints = local.vault_private_endpoints

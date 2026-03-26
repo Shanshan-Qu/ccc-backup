@@ -19,9 +19,8 @@ resource "azurerm_backup_container_storage_account" "files" {
   depends_on = [module.files_storage]
 }
 
-# Azure Files protection must be configured via the Portal:
+# Azure Files protection must be configured via the Portal (shared key access is disabled):
 # Vault -> Backup -> Azure File Share -> select storage account -> assign CCC-AzFiles-Policy
-# (azurerm_backup_protected_file_share requires shared key access which is disabled)
 
 # Non-prod Linux VM backup registration
 resource "azurerm_backup_protected_vm" "nonprod" {
@@ -33,14 +32,7 @@ resource "azurerm_backup_protected_vm" "nonprod" {
   depends_on = [module.nonprod_vm]
 }
 
-# SQL IaaS extension — enables workload-level backup discovery
-# After VM boots, register the container:
-#   az backup container register \
-#     --resource-group rg-rsv-backup-nzn \
-#     --vault-name rsv-ccc-backup-nzn-test \
-#     --backup-management-type AzureWorkload \
-#     --workload-type SQLDataBase \
-#     --resource-id $(terraform output -raw sql_vm_id)
+# SQL IaaS extension — enables workload-level backup discovery in the vault
 resource "azurerm_mssql_virtual_machine" "sql" {
   virtual_machine_id = module.sql_vm.resource_id
   sql_license_type   = "PAYG"
