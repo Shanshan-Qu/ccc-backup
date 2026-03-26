@@ -52,11 +52,11 @@ rsv_contributor_principal_ids = [
 
 # ── Alerting ─────────────────────────────────────────────────
 alert_email_receivers = [
-  # "backup-ops@ccc.govt.nz",
+  "shanshanqu@microsoft.com",
 ]
 
 alert_email_receivers_security = [
-  # "platform-security@ccc.govt.nz",
+  "shanshanqu@microsoft.com",
 ]
 
 # ── Tags ─────────────────────────────────────────────────────

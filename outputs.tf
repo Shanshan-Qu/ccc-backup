@@ -29,13 +29,13 @@ output "recovery_services_vault_name" {
 }
 
 output "backup_policy_vm_nonprod_id" {
-  description = "Resource ID of the VM non-prod (CCC-Policy enhanced V2) backup policy."
-  value       = module.recovery_services_vault.recovery_services_vault_vm_policy["ccc-policy"].resource_id
+  description = "Resource ID of the VM non-prod backup policy."
+  value       = module.recovery_services_vault.recovery_services_vault_vm_policy["ccc-vm-policy"].resource_id
 }
 
 output "backup_policy_sql_id" {
-  description = "Resource ID of the SQL Server workload (CCC-SQLPolicy) backup policy."
-  value       = module.recovery_services_vault.recovery_workload_policy["ccc-sqlpolicy"].resource_id
+  description = "Resource ID of the SQL Server workload backup policy."
+  value       = module.recovery_services_vault.recovery_workload_policy["ccc-sql-workload-policy"].resource_id
 }
 
 output "backup_policy_azfiles_id" {

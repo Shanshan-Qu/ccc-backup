@@ -31,8 +31,8 @@ module "recovery_services_vault" {
   }
 
   vm_backup_policy = {
-    "ccc-policy" = {
-      name                           = "CCC-Policy"
+    "ccc-vm-policy" = {
+      name                           = "CCC-VM-Policy"
       timezone                       = local.nz_timezone
       policy_type                    = "V2"
       frequency                      = "Daily"
@@ -77,8 +77,8 @@ module "recovery_services_vault" {
   }
 
   workload_backup_policy = {
-    "ccc-sqlpolicy" = {
-      name          = "CCC-SQLPolicy"
+    "ccc-sql-workload-policy" = {
+      name          = "CCC-SQL-Workload-Policy"
       workload_type = "SQLDataBase"
       settings = {
         time_zone           = local.nz_timezone
