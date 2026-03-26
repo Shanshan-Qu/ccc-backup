@@ -232,30 +232,31 @@ Write-Step "TC002-SQL-Seed – Creating CCCTestDB and seeding 50 rows on SQL VM 
 if (Test-ShouldRun "TC002-SQL-Seed") {
     try {
         if ([string]::IsNullOrEmpty($SqlVmName)) {
-        Write-TestResult "TC002-SQL-Seed" "FAIL" "SqlVmName is empty – pass -SqlVmName or ensure terraform output sql_vm_name is set."
-    } else {
-        # Write SQL seeding script to a temp file so quoting is not an issue
-        $sqlSeedScript = Join-Path $env:TEMP "ccc-sql-seed-$([System.Guid]::NewGuid()).ps1"
-        @"
+            Write-TestResult "TC002-SQL-Seed" "FAIL" "SqlVmName is empty – pass -SqlVmName or ensure terraform output sql_vm_name is set."
+        } else {
+            # Write SQL seeding script to a temp file so quoting is not an issue
+            $sqlSeedScript = Join-Path $env:TEMP "ccc-sql-seed-$([System.Guid]::NewGuid()).ps1"
+            @"
 sqlcmd -S localhost -U $SqlAdminLogin -P "$SqlAdminPassword" -Q "IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'CCCTestDB') CREATE DATABASE CCCTestDB"
-if (\$LASTEXITCODE -ne 0) { exit \$LASTEXITCODE }
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 sqlcmd -S localhost -U $SqlAdminLogin -P "$SqlAdminPassword" -d CCCTestDB -Q "IF OBJECT_ID('dbo.BackupTestRecords') IS NULL CREATE TABLE dbo.BackupTestRecords (Id INT IDENTITY PRIMARY KEY, RecordName NVARCHAR(100) NOT NULL, SeededAt DATETIME2 DEFAULT SYSUTCDATETIME(), Payload NVARCHAR(MAX))"
-if (\$LASTEXITCODE -ne 0) { exit \$LASTEXITCODE }
-sqlcmd -S localhost -U $SqlAdminLogin -P "$SqlAdminPassword" -d CCCTestDB -Q "DECLARE @i INT=1; WHILE @i<=50 BEGIN INSERT dbo.BackupTestRecords(RecordName,Payload) VALUES(CONCAT('CCC-Record-',FORMAT(@i,'000')),CONCAT('{""index"":',@i,'}'));SET @i=@i+1 END; SELECT COUNT(*) AS TotalRows FROM dbo.BackupTestRecords"
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
+sqlcmd -S localhost -U $SqlAdminLogin -P "$SqlAdminPassword" -d CCCTestDB -Q "DECLARE @i INT=1; WHILE @i<=50 BEGIN INSERT dbo.BackupTestRecords(RecordName,Payload) VALUES(CONCAT('CCC-Record-',FORMAT(@i,'000')),CONCAT('{""""index"""":',@i,'}'));SET @i=@i+1 END; SELECT COUNT(*) AS TotalRows FROM dbo.BackupTestRecords"
 "@ | Set-Content $sqlSeedScript -Encoding UTF8
 
-        $seedResult = Invoke-AzVMRunCommand `
-            -ResourceGroupName $ResourceGroup `
-            -VMName            $SqlVmName `
-            -CommandId         RunPowerShellScript `
-            -ScriptPath        $sqlSeedScript
-        Remove-Item $sqlSeedScript -Force -ErrorAction SilentlyContinue
+            $seedResult = Invoke-AzVMRunCommand `
+                -ResourceGroupName $ResourceGroup `
+                -VMName            $SqlVmName `
+                -CommandId         RunPowerShellScript `
+                -ScriptPath        $sqlSeedScript
+            Remove-Item $sqlSeedScript -Force -ErrorAction SilentlyContinue
 
-        $seedOutput = $seedResult.Value[0].Message
-        if ($seedOutput -match 'TotalRows') {
-            Write-TestResult "TC002-SQL-Seed" "PASS" "CCCTestDB created and seeded. Output: $($seedOutput -replace '\r?\n',' ')"
-        } else {
-            Write-TestResult "TC002-SQL-Seed" "FAIL" "Unexpected seed output: $seedOutput"
+            $seedOutput = $seedResult.Value[0].Message
+            if ($seedOutput -match 'TotalRows') {
+                Write-TestResult "TC002-SQL-Seed" "PASS" "CCCTestDB created and seeded. Output: $($seedOutput -replace '\r?\n',' ')"
+            } else {
+                Write-TestResult "TC002-SQL-Seed" "FAIL" "Unexpected seed output: $seedOutput"
+            }
         }
     } catch {
         Write-TestResult "TC002-SQL-Seed" "FAIL" "SQL seeding failed: $_"
