@@ -113,5 +113,9 @@ module "sql_vm" {
     }
   }
 
+  # Lock patch settings to prevent AVM module drift on SQL marketplace images.
+  patch_assessment_mode                                  = "AutomaticByPlatform"
+  bypass_platform_safety_checks_on_user_schedule_enabled = true
+
   depends_on = [module.resource_group, module.workload_vnet]
 }
