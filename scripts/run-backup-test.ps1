@@ -155,8 +155,8 @@ Write-Info "SQL VM name     : $SqlVmName"
 Write-Step "TC001 – Uploading test file to '$FileShareName' in '$StorageAccountName'"
 
 try {
-    $storageKey = (Get-AzStorageAccountKey -ResourceGroupName $ResourceGroup -Name $StorageAccountName)[0].Value
-    $storageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -StorageAccountKey $storageKey
+    # Use OAuth (Azure AD) – storage account keys are disabled by subscription policy
+    $storageCtx = New-AzStorageContext -StorageAccountName $StorageAccountName -UseConnectedAccount
 
     # Create test directory
     try { New-AzStorageDirectory -Context $storageCtx -ShareName $FileShareName -Path "backup-test" | Out-Null }
@@ -200,32 +200,28 @@ try {
     if ([string]::IsNullOrEmpty($SqlVmName)) {
         Write-TestResult "TC002-SQL-Seed" "FAIL" "SqlVmName is empty – pass -SqlVmName or ensure terraform output sql_vm_name is set."
     } else {
-        # Create database
-        $createDbScript = 'sqlcmd -S localhost -E -Q "IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = ''''CCCTestDB'''') CREATE DATABASE CCCTestDB"'
-        az vm run-command invoke `
-            --resource-group $ResourceGroup --name $SqlVmName `
-            --command-id RunPowerShellScript `
-            --scripts $createDbScript | Out-Null
+        # Write SQL seeding script to a temp file so quoting is not an issue
+        $sqlSeedScript = Join-Path $env:TEMP "ccc-sql-seed-$([System.Guid]::NewGuid()).ps1"
+        @'
+sqlcmd -S localhost -E -Q "IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'CCCTestDB') CREATE DATABASE CCCTestDB"
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+sqlcmd -S localhost -E -d CCCTestDB -Q "IF OBJECT_ID('dbo.BackupTestRecords') IS NULL CREATE TABLE dbo.BackupTestRecords (Id INT IDENTITY PRIMARY KEY, RecordName NVARCHAR(100) NOT NULL, SeededAt DATETIME2 DEFAULT SYSUTCDATETIME(), Payload NVARCHAR(MAX))"
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+sqlcmd -S localhost -E -d CCCTestDB -Q "DECLARE @i INT=1; WHILE @i<=50 BEGIN INSERT dbo.BackupTestRecords(RecordName,Payload) VALUES(CONCAT('CCC-Record-',FORMAT(@i,'000')),CONCAT('{"index":',@i,'}'));SET @i=@i+1 END; SELECT COUNT(*) AS TotalRows FROM dbo.BackupTestRecords"
+'@ | Set-Content $sqlSeedScript -Encoding UTF8
 
-        # Create table
-        $createTableScript = 'sqlcmd -S localhost -E -d CCCTestDB -Q "IF OBJECT_ID(''''dbo.BackupTestRecords'''') IS NULL CREATE TABLE dbo.BackupTestRecords (Id INT IDENTITY PRIMARY KEY, RecordName NVARCHAR(100) NOT NULL, SeededAt DATETIME2 DEFAULT SYSUTCDATETIME(), Payload NVARCHAR(MAX))"'
-        az vm run-command invoke `
-            --resource-group $ResourceGroup --name $SqlVmName `
-            --command-id RunPowerShellScript `
-            --scripts $createTableScript | Out-Null
+        $seedResult = Invoke-AzVMRunCommand `
+            -ResourceGroupName $ResourceGroup `
+            -VMName            $SqlVmName `
+            -CommandId         RunPowerShellScript `
+            -ScriptPath        $sqlSeedScript
+        Remove-Item $sqlSeedScript -Force -ErrorAction SilentlyContinue
 
-        # Seed 50 rows and verify
-        $seedScript = 'sqlcmd -S localhost -E -d CCCTestDB -Q "DECLARE @i INT=1; WHILE @i<=50 BEGIN INSERT dbo.BackupTestRecords(RecordName,Payload) VALUES(CONCAT(''''CCC-Record-'''',FORMAT(@i,''''000'''')),CONCAT(''''{""index"":'''',@i,''''}''''''));SET @i=@i+1 END; SELECT COUNT(*) AS TotalRows FROM dbo.BackupTestRecords"'
-        $seedResult = az vm run-command invoke `
-            --resource-group $ResourceGroup --name $SqlVmName `
-            --command-id RunPowerShellScript `
-            --scripts $seedScript `
-            --query "value[0].message" -o tsv 2>&1
-
-        if ($seedResult -match 'TotalRows') {
-            Write-TestResult "TC002-SQL-Seed" "PASS" "CCCTestDB created and seeded. Output: $($seedResult -replace '`n',' ')"
+        $seedOutput = $seedResult.Value[0].Message
+        if ($seedOutput -match 'TotalRows') {
+            Write-TestResult "TC002-SQL-Seed" "PASS" "CCCTestDB created and seeded. Output: $($seedOutput -replace '\r?\n',' ')"
         } else {
-            Write-TestResult "TC002-SQL-Seed" "FAIL" "Unexpected seed output: $seedResult"
+            Write-TestResult "TC002-SQL-Seed" "FAIL" "Unexpected seed output: $seedOutput"
         }
     }
 } catch {
@@ -250,8 +246,7 @@ Write-Step "TC002 – Triggering on-demand backup for file share '$FileShareName
 $filesJob = $null
 try {
     $storageContainer = Get-AzRecoveryServicesBackupContainer `
-        -ContainerType AzureStorage `
-        -Status        Registered |
+        -ContainerType AzureStorage |
         Where-Object { $_.FriendlyName -like "*$StorageAccountName*" }
 
     if ($null -eq $storageContainer) {
@@ -284,8 +279,7 @@ Write-Step "TC003 – Triggering on-demand backup for VM '$VmName'"
 $vmJob = $null
 try {
     $vmContainer = Get-AzRecoveryServicesBackupContainer `
-        -ContainerType AzureVM `
-        -Status        Registered |
+        -ContainerType AzureVM |
         Where-Object { $_.FriendlyName -like "*$VmName*" }
 
     if ($null -eq $vmContainer) {
@@ -360,7 +354,7 @@ try {
         Register-AzRecoveryServicesBackupContainer `
             -ResourceId           $sqlVmId `
             -BackupManagementType AzureWorkload `
-            -WorkloadType         SQLDataBase `
+            -WorkloadType         MSSQL `
             -VaultId              $vault.ID `
             -Force | Out-Null
 
@@ -374,10 +368,10 @@ try {
             Write-TestResult "TC006-SQL" "FAIL" "SQL VM container not found after registration."
         } else {
             Initialize-AzRecoveryServicesBackupProtectableItem `
-                -WorkloadType SQLDataBase -VaultId $vault.ID -Container $sqlContainer | Out-Null
+                -WorkloadType MSSQL -VaultId $vault.ID -Container $sqlContainer | Out-Null
 
             $dbItem = Get-AzRecoveryServicesBackupProtectableItem `
-                -WorkloadType SQLDataBase -ItemType SQLDataBase -VaultId $vault.ID |`
+                -WorkloadType MSSQL -ItemType SQLDataBase -VaultId $vault.ID |`
                 Where-Object { $_.ParentContainerFriendlyName -like "*$SqlVmName*" -and $_.FriendlyName -eq "CCCTestDB" }
 
             if ($null -eq $dbItem) {
@@ -391,7 +385,7 @@ try {
 
                 # Trigger on-demand full backup
                 $sqlItem = Get-AzRecoveryServicesBackupItem `
-                    -WorkloadType SQLDataBase -BackupManagementType AzureWorkload `
+                    -WorkloadType MSSQL -BackupManagementType AzureWorkload `
                     -VaultId $vault.ID |`
                     Where-Object { $_.FriendlyName -eq "CCCTestDB" }
 
@@ -421,7 +415,7 @@ Write-Step "TC006 / TC007 – Verifying recovery points exist"
 # File share recovery points
 try {
     $storageContainer2 = Get-AzRecoveryServicesBackupContainer `
-        -ContainerType AzureStorage -Status Registered |
+        -ContainerType AzureStorage |
         Where-Object { $_.FriendlyName -like "*$StorageAccountName*" }
 
     $filesItem2 = Get-AzRecoveryServicesBackupItem `
@@ -442,7 +436,7 @@ try {
 # VM recovery points
 try {
     $vmContainer2 = Get-AzRecoveryServicesBackupContainer `
-        -ContainerType AzureVM -Status Registered |
+        -ContainerType AzureVM |
         Where-Object { $_.FriendlyName -like "*$VmName*" }
 
     $vmItem2 = Get-AzRecoveryServicesBackupItem `
@@ -463,7 +457,7 @@ try {
 try {
     if (-not [string]::IsNullOrEmpty($SqlVmName)) {
         $sqlItem2 = Get-AzRecoveryServicesBackupItem `
-            -WorkloadType SQLDataBase -BackupManagementType AzureWorkload `
+            -WorkloadType MSSQL -BackupManagementType AzureWorkload `
             -VaultId $vault.ID |`
             Where-Object { $_.FriendlyName -eq "CCCTestDB" }
 
@@ -494,8 +488,8 @@ Write-Host "============================================================" -Foreg
 
 $results | Format-Table -AutoSize @{L="Test Case";E="TestCase"}, @{L="Status";E="Status"}, @{L="Detail";E="Detail"}
 
-$passed = ($results | Where-Object Status -eq "PASS").Count
-$failed = ($results | Where-Object Status -eq "FAIL").Count
+$passed = @($results | Where-Object { $_.Status -eq "PASS" }).Count
+$failed = @($results | Where-Object { $_.Status -eq "FAIL" }).Count
 $total  = $results.Count
 
 Write-Host "  Passed : $passed / $total" -ForegroundColor $(if ($failed -eq 0) { "Green" } else { "Yellow" })
