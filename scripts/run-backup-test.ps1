@@ -61,7 +61,7 @@ function Write-Info([string]$msg) { Write-Host "      $msg" -ForegroundColor Gra
 
 $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
-function Record-Result([string]$tc, [string]$status, [string]$detail) {
+function Write-TestResult([string]$tc, [string]$status, [string]$detail) {
     $results.Add([PSCustomObject]@{ TestCase = $tc; Status = $status; Detail = $detail })
     if ($status -eq "PASS") { Write-Pass "$tc – $detail" }
     else                     { Write-Fail "$tc – $detail" }
@@ -151,7 +151,7 @@ try {
         "Azure Files backup policy (CCC-AzFiles-Policy) is protecting data"
         "in share '$FileShareName' within storage account '$StorageAccountName'."
         ""
-    ) + (1..50 | ForEach-Object { "Record $_: $(Get-Date -Format o -AsUTC) – sample workload data" })
+    ) + (1..50 | ForEach-Object { "Record {0}: {1} - sample workload data" -f $_, (Get-Date -Format o -AsUTC) })
     $content | Set-Content -Path $tmpFile -Encoding UTF8
 
     Set-AzStorageFileContent `
@@ -162,9 +162,9 @@ try {
         -Force | Out-Null
 
     Remove-Item $tmpFile -Force
-    Record-Result "TC001" "PASS" "Test file uploaded to $FileShareName/backup-test/"
+    Write-TestResult "TC001" "PASS" "Test file uploaded to $FileShareName/backup-test/"
 } catch {
-    Record-Result "TC001" "FAIL" "Upload failed: $_"
+    Write-TestResult "TC001" "FAIL" "Upload failed: $_"
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -190,7 +190,7 @@ try {
         Where-Object { $_.FriendlyName -like "*$StorageAccountName*" }
 
     if ($null -eq $storageContainer) {
-        Record-Result "TC002" "FAIL" "Storage account '$StorageAccountName' is not registered with vault. Ensure azurerm_backup_protected_file_share was applied."
+        Write-TestResult "TC002" "FAIL" "Storage account '$StorageAccountName' is not registered with vault. Ensure azurerm_backup_protected_file_share was applied."
     } else {
         $filesItem = Get-AzRecoveryServicesBackupItem `
             -Container   $storageContainer `
@@ -198,16 +198,16 @@ try {
             Where-Object { $_.FriendlyName -like "*$FileShareName*" }
 
         if ($null -eq $filesItem) {
-            Record-Result "TC002" "FAIL" "File share '$FileShareName' not found in container '$($storageContainer.FriendlyName)'."
+            Write-TestResult "TC002" "FAIL" "File share '$FileShareName' not found in container '$($storageContainer.FriendlyName)'."
         } else {
             $expiryUtc  = (Get-Date).ToUniversalTime().AddDays(30)
             $filesJob   = Backup-AzRecoveryServicesBackupItem -Item $filesItem -ExpiryDateTimeUTC $expiryUtc
             Write-Info "On-demand backup triggered – Job ID: $($filesJob.JobId)"
-            Record-Result "TC002" "PASS" "On-demand backup job started (Job ID: $($filesJob.JobId))"
+            Write-TestResult "TC002" "PASS" "On-demand backup job started (Job ID: $($filesJob.JobId))"
         }
     }
 } catch {
-    Record-Result "TC002" "FAIL" "Error triggering file share backup: $_"
+    Write-TestResult "TC002" "FAIL" "Error triggering file share backup: $_"
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -224,23 +224,23 @@ try {
         Where-Object { $_.FriendlyName -like "*$VmName*" }
 
     if ($null -eq $vmContainer) {
-        Record-Result "TC003" "FAIL" "VM '$VmName' is not registered with vault. Ensure azurerm_backup_protected_vm was applied."
+        Write-TestResult "TC003" "FAIL" "VM '$VmName' is not registered with vault. Ensure azurerm_backup_protected_vm was applied."
     } else {
         $vmItem = Get-AzRecoveryServicesBackupItem `
             -Container    $vmContainer `
             -WorkloadType AzureVM
 
         if ($null -eq $vmItem) {
-            Record-Result "TC003" "FAIL" "Backup item for VM '$VmName' not found in container."
+            Write-TestResult "TC003" "FAIL" "Backup item for VM '$VmName' not found in container."
         } else {
             $vmExpiryUtc = (Get-Date).ToUniversalTime().AddDays(7)
             $vmJob       = Backup-AzRecoveryServicesBackupItem -Item $vmItem -ExpiryDateTimeUTC $vmExpiryUtc
             Write-Info "On-demand VM backup triggered – Job ID: $($vmJob.JobId)"
-            Record-Result "TC003" "PASS" "On-demand VM backup job started (Job ID: $($vmJob.JobId))"
+            Write-TestResult "TC003" "PASS" "On-demand VM backup job started (Job ID: $($vmJob.JobId))"
         }
     }
 } catch {
-    Record-Result "TC003" "FAIL" "Error triggering VM backup: $_"
+    Write-TestResult "TC003" "FAIL" "Error triggering VM backup: $_"
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -273,10 +273,10 @@ function Wait-BackupJob {
 }
 
 $r4 = Wait-BackupJob -Job $filesJob -Label "FileShare"
-Record-Result "TC004" $r4.Status $r4.Detail
+Write-TestResult "TC004" $r4.Status $r4.Detail
 
 $r5 = Wait-BackupJob -Job $vmJob   -Label "VM"
-Record-Result "TC005" $r5.Status $r5.Detail
+Write-TestResult "TC005" $r5.Status $r5.Detail
 
 # ──────────────────────────────────────────────────────────────
 # Step 8 – Verify recovery points exist
@@ -297,12 +297,12 @@ try {
     $rps = Get-AzRecoveryServicesBackupRecoveryPoint -Item $filesItem2
 
     if ($rps.Count -gt 0) {
-        Record-Result "TC006" "PASS" "File share has $($rps.Count) recovery point(s). Latest: $($rps[0].RecoveryPointTime)"
+        Write-TestResult "TC006" "PASS" "File share has $($rps.Count) recovery point(s). Latest: $($rps[0].RecoveryPointTime)"
     } else {
-        Record-Result "TC006" "FAIL" "No recovery points found for file share '$FileShareName'."
+        Write-TestResult "TC006" "FAIL" "No recovery points found for file share '$FileShareName'."
     }
 } catch {
-    Record-Result "TC006" "FAIL" "Error checking file share recovery points: $_"
+    Write-TestResult "TC006" "FAIL" "Error checking file share recovery points: $_"
 }
 
 # VM recovery points
@@ -317,12 +317,12 @@ try {
     $vmRps = Get-AzRecoveryServicesBackupRecoveryPoint -Item $vmItem2
 
     if ($vmRps.Count -gt 0) {
-        Record-Result "TC007" "PASS" "VM has $($vmRps.Count) recovery point(s). Latest: $($vmRps[0].RecoveryPointTime)"
+        Write-TestResult "TC007" "PASS" "VM has $($vmRps.Count) recovery point(s). Latest: $($vmRps[0].RecoveryPointTime)"
     } else {
-        Record-Result "TC007" "FAIL" "No recovery points found for VM '$VmName'."
+        Write-TestResult "TC007" "FAIL" "No recovery points found for VM '$VmName'."
     }
 } catch {
-    Record-Result "TC007" "FAIL" "Error checking VM recovery points: $_"
+    Write-TestResult "TC007" "FAIL" "Error checking VM recovery points: $_"
 }
 
 # ──────────────────────────────────────────────────────────────
