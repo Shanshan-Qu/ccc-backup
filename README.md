@@ -42,28 +42,27 @@ All resources are deployed in **New Zealand North** (`newzealandnorth`) into a d
 
 ```mermaid
 flowchart TB
-    subgraph internet["Azure Services (Public Endpoints)"]
+    subgraph internet["Internet (Azure Backbone)"]
         direction LR
-        ABsvc["Azure Backup Service\n*.backup.windowsazure.com"]
         AADsvc["Microsoft Entra ID\n*.login.microsoft.com"]
     end
 
     subgraph sub["Azure Subscription — New Zealand North"]
         subgraph rg["Resource Group: rg-rsv-backup-nzn"]
 
-            RSV["🔐 Recovery Services Vault\nrsv-ccc-backup-nzn-test\nLRS · Enhanced Soft Delete\n⚠ public_network_access: enabled (test env — see note below)"]
-            NATGW["🌐 NAT Gateway: ng-workload-nzn-test\npip-nat-nzn-test  (Standard Static PIP)"]
+            RSV["🔐 Recovery Services Vault\nrsv-ccc-backup-nzn-test\nLRS · Enhanced Soft Delete\npublic_network_access: disabled"]
+            NATGW["🌐 NAT Gateway: ng-workload-nzn-test\npip-nat-nzn-test (Standard Static PIP)"]
 
             subgraph vnet["VNet: vnet-ccc-backup-nzn-test  10.100.0.0/16"]
 
                 subgraph snet_wl["Workload Subnet: snet-workload-nzn-test  10.100.1.0/24"]
-                    NSG["🛡 NSG: nsg-workload-nzn-test\nAllow Outbound → AzureBackup / Storage / AzureAD  :443"]
+                    NSG["🛡 NSG: nsg-workload-nzn-test\nAllow Outbound → AzureBackup / Storage / AzureAD :443"]
                     VM_NP["🖥 vm-ccc-backup-nzn-test-01\nUbuntu Linux — Non-Prod"]
                     VM_SQL["🗄 vm-ccc-sql-nzn-test-01\nSQL Server 2022 — Windows"]
                 end
 
                 subgraph snet_pe["PE Subnet: snet-pe-nzn-test  10.100.2.0/27"]
-                    PE_SLOT["📌 Reserved for Vault Private Endpoint\nProduction deployment only — see note below"]
+                    PE["🔗 pe-rsv-ccc-backup-nzn-test\nVault Private Endpoint\n(subresource: AzureBackup)"]
                 end
             end
 
@@ -86,15 +85,15 @@ flowchart TB
         end
     end
 
-    %% Outbound internet via NAT Gateway (test env workaround)
+    %% VM internet egress via NAT Gateway (OS patching, general outbound)
     VM_NP & VM_SQL -->|outbound via NAT GW| NATGW
-    NATGW -->|HTTPS :443| ABsvc
     NATGW -->|HTTPS :443| AADsvc
 
-    %% Backup protection flows
-    VM_NP -->|"OS backup — CCC-VM-Policy"| RSV
-    VM_SQL -->|"OS backup — CCC-VM-Policy"| RSV
-    VM_SQL -.->|"SQL workload backup — CCC-SQLPolicy"| RSV
+    %% Backup traffic flows via private endpoint — stays on Azure backbone
+    VM_NP -->|"OS backup — CCC-VM-Policy"| PE
+    VM_SQL -->|"OS backup — CCC-VM-Policy"| PE
+    VM_SQL -.->|"SQL workload backup — CCC-SQLPolicy"| PE
+    PE --> RSV
     FS -.- SA
     SA -->|"AzFiles backup — CCC-AzFiles-Policy\nAzureServices trusted bypass"| RSV
 
@@ -105,42 +104,28 @@ flowchart TB
 
 ---
 
-### Outbound Connectivity — NAT Gateway vs Private Endpoint
+### Outbound Connectivity
 
-The Azure Backup workload extension (`AzureBackupWindowsWorkload`) on the SQL VM must reach `*.backup.windowsazure.com` and `*.login.microsoft.com` over HTTPS. The NSG service tag rules permit those destinations, but **service tags only restrict which destinations are reachable — they do not create an outbound path**. Without a public IP, NAT Gateway, or private endpoint, all egress connections time out.
+Backup traffic and general VM internet access use different paths:
 
-#### Option 1 — NAT Gateway *(current test environment)*
+#### Backup — Private Endpoint
 
-A Standard NAT Gateway (`ng-workload-nzn-test`) is attached to the workload subnet, providing outbound internet via `pip-nat-nzn-test`. Backup traffic is internet-routed but restricted to Azure service tag destinations by the NSG.
+All backup workloads (VM, SQL, Azure Files) communicate with the vault via the private endpoint `pe-rsv-ccc-backup-nzn-test` in `snet-pe-nzn-test`. DNS resolution for `*.backup.windowsazure.com`, `*.queue.core.windows.net`, and `*.blob.core.windows.net` is handled by the three linked private DNS zones, resolving to private IPs within the VNet. No internet egress is required for backup traffic.
 
-#### Option 2 — Private Endpoint *(recommended for production)*
+This satisfies the build spec requirement of `public_network_access_enabled = false` on the vault and is the [recommended connectivity model](https://learn.microsoft.com/en-us/azure/backup/backup-sql-server-database-azure-vms#private-endpoints) for SQL VM workload backup.
 
-[Microsoft docs confirm](https://learn.microsoft.com/en-us/azure/backup/backup-sql-server-database-azure-vms#private-endpoints) that private endpoints are the preferred connectivity method for SQL VM workload backup. With a vault private endpoint:
+#### General VM Internet — NAT Gateway
 
-- `*.backup.windowsazure.com` resolves to a **private IP** in `snet-pe-nzn-test` via the pre-deployed DNS zones — no public DNS lookup.
-- All backup traffic stays on the **Azure backbone** — no internet egress required.
-- The NAT Gateway is not needed for backup connectivity with PE in place.
-- Vault `public_network_access_enabled = false` can be enforced (the target state per the build spec).
+The Standard NAT Gateway (`ng-workload-nzn-test`) on the workload subnet provides outbound internet for OS-level operations (Windows Update, package managers, Entra ID token acquisition). The NSG allows only `AzureBackup`, `Storage`, and `AzureActiveDirectory` service tag destinations on port 443.
 
-> **Why this test vault has no private endpoint:**
->
-> Azure enforces a hard constraint: **a private endpoint cannot be added to a Recovery Services vault that already has backup items registered**
-> (`UserErrorMultiTenantVaultPrivateEndpointNotAllowed`). In this test environment, backup items
-> were registered first (to run the test suite), which permanently blocks PE creation on this vault
-> instance. The private DNS zones and PE subnet are fully deployed and ready — only the vault-level
-> PE resource is blocked.
+#### Required Deployment Order
 
-#### Production deployment order (required to use private endpoints)
+Azure blocks adding a private endpoint to a vault that already has backup items registered (`UserErrorMultiTenantVaultPrivateEndpointNotAllowed`). This Terraform config deploys in the correct sequence to avoid that constraint:
 
-Follow this exact sequence to avoid the constraint above:
-
-1. Deploy the VNet, PE subnet (`snet-pe-nzn-test`), and private DNS zones.
-2. Deploy the Recovery Services Vault with `public_network_access_enabled = false`.
-3. **Create the vault private endpoint** (before registering any backup items).
-4. Validate DNS resolution of `privatelink.nzn.backup.windowsazure.com` from the workload subnet.
-5. Only then enable backup protection (VMs, SQL databases, file shares).
-
-With this order the NAT Gateway is not required for backup workloads (though it remains useful for OS-level patching and other internet access from the workload VMs).
+1. VNet, PE subnet, and private DNS zones.
+2. Recovery Services Vault with `public_network_access_enabled = false`.
+3. Vault private endpoint — created before any backup protection is enabled.
+4. Backup protection for VMs, SQL databases, and file shares.
 
 ---
 
@@ -196,7 +181,8 @@ AzureBackup-terraform/
 | Resource Type | Name | Notes |
 |---|---|---|
 | Resource Group | `rg-rsv-backup-nzn` | Fixed name per spec |
-| Recovery Services Vault | `rsv-ccc-backup-nzn-<env>` | LRS, Enhanced Soft Delete, public access off |
+| Recovery Services Vault | `rsv-ccc-backup-nzn-<env>` | LRS, Enhanced Soft Delete, public access disabled |
+| Private Endpoint | `pe-rsv-ccc-backup-nzn-<env>` | In `snet-pe-nzn-test`, subresource `AzureBackup` |
 | Log Analytics Workspace | `law-ccc-backup-nzn-<env>` | 90-day retention (configurable) |
 | Backup Policy (VM V2) | `CCC-Policy` | Enhanced V2, smart-tier archive enabled |
 | Backup Policy (SQL) | `CCC-SQLPolicy` | Full + Differential; logs disabled |
@@ -316,9 +302,6 @@ Open [terraform.tfvars](terraform.tfvars) and replace all `TODO` values:
 ```hcl
 subscription_id = "<your-subscription-id>"
 
-# Optional — leave empty to skip private endpoint for initial test
-private_endpoint_subnet_id = ""
-
 # Alert recipients
 alert_email_receivers          = ["backup-ops@ccc.govt.nz"]
 alert_email_receivers_security = ["platform-security@ccc.govt.nz"]
@@ -351,7 +334,7 @@ terraform apply
 terraform destroy
 ```
 
-> **Note:** Because `soft_delete_feature_state = "AlwaysON"` (Enhanced Soft Delete), you must unregister all backup items from the vault before destroy will succeed. Alternatively, set `prevent_recovery_services_soft_delete = false` in the provider block (already done) and ensure no active backup items exist in the vault.
+> **Note:** Enhanced Soft Delete (`AlwaysON`) means all backup items must be unregistered and their recovery points deleted before `terraform destroy` will succeed on the vault. Disable soft delete via the vault security settings, delete all protected items and recovery points, then run destroy.
 
 ---
 
