@@ -11,13 +11,9 @@ module "recovery_services_vault" {
   cross_region_restore_enabled  = false
   soft_delete_enabled           = true
   immutability                  = var.enable_immutability ? "Unlocked" : "Disabled"
-  # NOTE: private endpoint cannot be added to a vault that already has backup items configured
-  # (Azure limitation: UserErrorMultiTenantVaultPrivateEndpointNotAllowed).
-  # For a fresh deployment, set up the private endpoint BEFORE enabling any backup protection.
-  # The private DNS zones and PE subnet exist in this config ready for a clean vault deployment.
-  public_network_access_enabled = true  # kept enabled; vault has existing backup items
+  public_network_access_enabled = false
 
-  private_endpoints = {}  # PE cannot be added post-backup; see above note
+  private_endpoints = local.vault_private_endpoints
 
   diagnostic_settings = {
     to_law = {
