@@ -421,8 +421,9 @@ if (Test-ShouldRun "TC006-SQL") {
                 -WorkloadType MSSQL -VaultId $vault.ID -Container $sqlContainer | Out-Null
 
             $dbItem = Get-AzRecoveryServicesBackupProtectableItem `
-                -WorkloadType MSSQL -ItemType SQLDataBase -VaultId $vault.ID -ErrorAction SilentlyContinue |`
-                Where-Object { $_.ServerName -like "*$SqlVmName*" -and $_.FriendlyName -eq "CCCTestDB" }
+                -WorkloadType MSSQL -ItemType SQLDataBase -VaultId $vault.ID `
+                -Container $sqlContainer -ErrorAction SilentlyContinue |`
+                Where-Object { $_.FriendlyName -eq "CCCTestDB" }
 
             if ($null -eq $dbItem) {
                 Write-TestResult "TC006-SQL" "FAIL" "CCCTestDB not discovered on '$SqlVmName'. Ensure the database was seeded and the SQL IaaS extension is registered."
