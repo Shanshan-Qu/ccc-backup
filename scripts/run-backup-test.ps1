@@ -442,7 +442,7 @@ if (Test-ShouldRun "TC006-SQL") {
 
                 $sqlJob = Backup-AzRecoveryServicesBackupItem `
                     -Item $sqlItem -BackupType Full `
-                    -ExpiryDateTimeUTC (Get-Date).ToUniversalTime().AddDays(7) `
+                    -ExpiryDateTimeUTC (Get-Date).ToUniversalTime().AddDays(45) `
                     -VaultId $vault.ID
                 Write-TestResult "TC006-SQL" "PASS" "SQL full backup triggered – Job ID: $($sqlJob.JobId)"
             }
