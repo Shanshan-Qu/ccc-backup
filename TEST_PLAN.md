@@ -58,6 +58,83 @@ az account set --subscription $Sub
 
 ---
 
+## 2a. Automated Smoke Test – `run-backup-test.ps1`
+
+The script `scripts/run-backup-test.ps1` automates all seeding, backup triggering, job waiting, and recovery point verification steps in one run. Use it as a quick end-to-end smoke test after `terraform apply`.
+
+### Prerequisites
+
+```powershell
+# Ensure Az PowerShell modules are available (script will install them if missing)
+# Ensure az CLI is authenticated
+az account show
+
+# Ensure terraform outputs are available (script reads them automatically)
+terraform output workload_storage_account_name
+terraform output workload_vm_name
+terraform output sql_vm_name
+```
+
+### Run with defaults (all values auto-resolved from terraform output)
+
+```powershell
+cd "C:\Users\shanshanqu\OneDrive - Microsoft\Customers\CCC\AzureBackup-terraform"
+.\scripts\run-backup-test.ps1
+```
+
+### Run with explicit resource names (no terraform state required)
+
+```powershell
+.\scripts\run-backup-test.ps1 `
+    -SubscriptionId     "634c603a-fa54-431f-8fdd-2279020b1cb9" `
+    -ResourceGroup      "rg-rsv-backup-nzn" `
+    -VaultName          "rsv-ccc-backup-nzn-test" `
+    -StorageAccountName "stccc<suffix>" `
+    -FileShareName      "ccc-test-share" `
+    -VmName             "vm-ccc-backup-nzn-test-01" `
+    -SqlVmName          "vm-ccc-sql-nzn-test-01"
+```
+
+### What the script does (test cases)
+
+| TC | Step | What it covers |
+|----|------|---------------|
+| TC001 | Upload test files to Azure File Share | Phase 2 seeding |
+| TC002-SQL-Seed | Create `CCCTestDB` + seed 50 rows on SQL VM via run-command | Phase 3 seeding |
+| TC002 | Trigger on-demand file share backup | Phase 2 backup |
+| TC003 | Trigger on-demand Linux VM backup | Phase 1 backup |
+| TC004 | Wait for file share backup job | Phase 2 verification |
+| TC005 | Wait for VM backup job | Phase 1 verification |
+| TC006-SQL | Register SQL container, enable DB protection, trigger full backup | Phase 3 backup |
+| TC007-SQL | Wait for SQL backup job | Phase 3 verification |
+| TC006 | Verify file share has ≥1 recovery point | Phase 2 recovery point |
+| TC007 | Verify VM has ≥1 recovery point | Phase 1 recovery point |
+| TC008 | Verify `CCCTestDB` has ≥1 recovery point | Phase 3 recovery point |
+
+### Expected output (all passing)
+
+```
+>>> TC001 – Uploading test file to 'ccc-test-share' in 'stccc...'
+[PASS] TC001 – Test file uploaded to ccc-test-share/backup-test/
+>>> TC002-SQL-Seed – Creating CCCTestDB and seeding 50 rows on SQL VM '...'
+[PASS] TC002-SQL-Seed – CCCTestDB created and seeded. Output: TotalRows 50
+...
+============================================================
+  CCC Azure Backup Test Results
+============================================================
+ Test Case       Status  Detail
+ -----------     ------  ------
+ TC001           PASS    Test file uploaded ...
+ TC002-SQL-Seed  PASS    CCCTestDB created and seeded ...
+ ...
+  Passed : 10 / 10
+  ALL TESTS PASSED
+```
+
+> **Tip**: Phases 4 (Alerts) and 5 (Cross-Subscription Restore) are manual steps — run them separately following Sections 7 and 9 of this plan.
+
+---
+
 ## 3. Phase 0 – Test Data Seeding
 
 Seed all three backup targets before running any backup jobs.
