@@ -114,9 +114,21 @@ try {
 # Step 2b – Resolve resource names from terraform output if needed
 # ──────────────────────────────────────────────────────────────
 
+# Resolve terraform binary: prefer one on PATH, fall back to known install location
+$tfExe = Get-Command terraform -ErrorAction SilentlyContinue |
+             Select-Object -ExpandProperty Source
+if (-not $tfExe) {
+    $tfExe = "C:\Users\shanshanqu\bin\terraform\terraform.exe"
+    if (-not (Test-Path $tfExe)) {
+        Write-Fail "terraform not found on PATH and not at $tfExe. Add terraform to your PATH and retry."
+        exit 1
+    }
+    Write-Info "terraform not on PATH – using $tfExe"
+}
+
 if ([string]::IsNullOrEmpty($StorageAccountName) -or [string]::IsNullOrEmpty($VmName) -or [string]::IsNullOrEmpty($SqlVmName)) {
     Write-Info "Reading terraform outputs to resolve resource names ..."
-    $tfOutputRaw = terraform output -json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+    $tfOutputRaw = & $tfExe output -json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
     if ($null -ne $tfOutputRaw) {
         if ([string]::IsNullOrEmpty($StorageAccountName)) {
             $StorageAccountName = $tfOutputRaw.workload_storage_account_name.value
