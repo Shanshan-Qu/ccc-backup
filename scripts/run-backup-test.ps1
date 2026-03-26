@@ -395,12 +395,18 @@ if (Test-ShouldRun "TC006-SQL") {
     } else {
         # Register the SQL VM as an AzureVMAppContainer
         $sqlVmId = az vm show -g $ResourceGroup -n $SqlVmName --query id -o tsv
-        Register-AzRecoveryServicesBackupContainer `
-            -ResourceId           $sqlVmId `
-            -BackupManagementType AzureWorkload `
-            -WorkloadType         MSSQL `
-            -VaultId              $vault.ID `
-            -Force | Out-Null
+        # Register container; if already registered from a prior run, ignore the error and continue
+        try {
+            Register-AzRecoveryServicesBackupContainer `
+                -ResourceId           $sqlVmId `
+                -BackupManagementType AzureWorkload `
+                -WorkloadType         MSSQL `
+                -VaultId              $vault.ID `
+                -Force -ErrorAction Stop | Out-Null
+        } catch {
+            if ($_ -notlike "*already registered*") { throw }
+            Write-Host "  Container already registered – skipping re-registration."
+        }
 
         # Discover SQL databases
         $sqlContainer = Get-AzRecoveryServicesBackupContainer `
