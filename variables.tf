@@ -95,6 +95,17 @@ variable "alert_email_receivers_security" {
   default     = []
 }
 
+variable "restore_target_subscription_id" {
+  description = <<-EOT
+    Subscription ID to use as the restore destination for cross-subscription
+    restore tests (Phase 5).  Defaults to the same subscription as the vault;
+    override with a second subscription ID to exercise true cross-subscription
+    restore.  Must be in the same Azure AD tenant.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Additional tags to merge with the default tags."
   type        = map(string)

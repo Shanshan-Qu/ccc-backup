@@ -1,10 +1,12 @@
 # CCC Azure Backup – Test Plan
 
-> **Version**: 3.0  
+> **Version**: 3.1  
 > **Environment**: `ShanshanQu-NonProd` (subscription `634c603a-fa54-431f-8fdd-2279020b1cb9`)  
 > **Region**: New Zealand North (`newzealandnorth`)  
 > **Vault**: `rsv-ccc-backup-nzn-test` in `rg-rsv-backup-nzn`  
 > **Alert notifications**: `shanshanqu@microsoft.com`
+
+**What changed in v3.1**: Added Phase 5 – Cross-Subscription Restore, covering VM disk restore, Azure Files restore, and SQL restore into an alternative subscription. Added `restore_target_subscription_id` variable.
 
 **What changed in v3.0**: VM-quota and Azure Files shared-key constraints are resolved on this subscription. Azure Files backup protection is now fully managed by Terraform (no Portal step). A test-data seeding phase and a full SQL workload backup/restore phase have been added.
 
@@ -437,15 +439,204 @@ az rest --method POST `
 
 ---
 
-## 7. Pass / Fail Criteria
+## 9. Phase 5 – Cross-Subscription Restore
 
-| Test | Pass Condition |
-|------|---------------|
-| VM on-demand backup | Job `Status = Completed`, ≥1 recovery point |
-| VM file-level restore | Target file accessible with correct content |
-| Azure Files on-demand backup | Job `Status = Completed`, ≥1 recovery point |
-| Azure Files restore | Restored file present in `restored/` folder |
-| Failed job alert | Email received within 30 min |
-| Backup health alert | Email received within 15 min |
-| Vault delete alert | Email received within 5 min |
-| Security PIN alert | Email received within 5 min |
+> **Requirement**: The vault must reside in the same subscription as its backup targets, but restore operations must be executable into an alternative subscription. This enables production backups to be seeded down into non-production environments.
+
+### Background
+
+Cross-subscription restore (CSR) is enabled by **default** on new Azure Recovery Services vaults (the `cross_subscription_restore_enabled` property defaults to `true` in the azurerm provider). This plan verifies CSR is active and exercises it for VM, Azure Files, and SQL workloads.
+
+A second subscription is needed to test true cross-subscription restore. In the absence of one, substitute with an alternate resource group in the **same** subscription — this exercises the same restore code path and API (`--target-subscription-id`) with the relaxed constraint of a single-subscription lab.
+
+### 9.0 Session Variables for CSR Phase
+
+```powershell
+# Target subscription — set to a second sub ID to test true CSR;
+# leave equal to $Sub to use the same subscription (alternate RG instead)
+$TargetSub = "634c603a-fa54-431f-8fdd-2279020b1cb9"   # replace if you have a second sub
+$TargetRG  = "rg-ccc-restore-target"                   # created below if it does not exist
+
+az account set --subscription $Sub   # ensure vault context stays on source sub
+```
+
+### 9.1 Verify Cross-Subscription Restore Is Enabled
+
+```powershell
+# Check vault CSR state via REST API
+$vaultId = az backup vault show -g $RG -n $Vault --query id -o tsv
+az rest --method GET `
+  --uri "https://management.azure.com${vaultId}?api-version=2024-04-01" `
+  --query "properties.restoreSettings.crossSubscriptionRestoreSettings.crossSubscriptionRestoreState" `
+  -o tsv
+```
+
+**Expected**: `Enabled`
+
+If the result is `Disabled` or `PermanentlyDisabled`, re-enable via:
+
+```powershell
+az rest --method PATCH `
+  --uri "https://management.azure.com${vaultId}?api-version=2024-04-01" `
+  --body '{"properties":{"restoreSettings":{"crossSubscriptionRestoreSettings":{"crossSubscriptionRestoreState":"Enabled"}}}}' `
+  --headers "Content-Type=application/json"
+```
+
+### 9.2 Prepare Target Subscription / Resource Group
+
+```powershell
+# Switch context to the TARGET subscription to create the restore landing zone
+az account set --subscription $TargetSub
+az group create --name $TargetRG --location newzealandnorth
+
+# For Files restore: create a target storage account
+$TargetSA = "stcccrestore$(Get-Random -Maximum 9999)"
+az storage account create `
+  --name $TargetSA --resource-group $TargetRG `
+  --location newzealandnorth --sku Standard_LRS --kind StorageV2
+
+# Create the target file share
+az storage share-rm create --name "restored-cross-sub" `
+  --storage-account $TargetSA --resource-group $TargetRG --quota 5
+
+# Switch back to the SOURCE subscription for all backup cmdlets
+az account set --subscription $Sub
+Set-AzContext -SubscriptionId $Sub | Out-Null
+$v = Get-AzRecoveryServicesVault -ResourceGroupName $RG -Name $Vault
+Set-AzRecoveryServicesVaultContext -Vault $v
+```
+
+### 9.3 Cross-Subscription VM Restore (Restore Disks)
+
+Restore the latest VM recovery point as managed disks into the target subscription. This is the pattern used to seed a non-production VM from a production backup.
+
+```powershell
+# Get latest VM recovery point
+$c   = Get-AzRecoveryServicesBackupContainer -ContainerType AzureVM -FriendlyName $VMName -VaultId $v.ID
+$item = Get-AzRecoveryServicesBackupItem -Container $c -WorkloadType AzureVM -VaultId $v.ID
+$rp  = Get-AzRecoveryServicesBackupRecoveryPoint -Item $item -VaultId $v.ID |
+           Sort-Object RecoveryPointTime -Descending | Select-Object -First 1
+
+# Build restore config targeting the alternate subscription's resource group
+$restoreConfig = Get-AzRecoveryServicesBackupWorkloadRecoveryConfig `
+  -RecoveryPoint $rp -VaultId $v.ID
+
+# Use Az CLI for the actual restore — it supports --target-subscription-id natively
+$rpName = $rp.RecoveryPointId.Split('/')[-1]
+$containerName = $c.Name
+
+az backup restore restore-disks `
+  --resource-group $RG `
+  --vault-name     $Vault `
+  --container-name $containerName `
+  --item-name      $VMName `
+  --rp-name        $rpName `
+  --storage-account $TargetSA `
+  --target-resource-group $TargetRG `
+  --target-subscription-id $TargetSub `
+  --restore-mode  AlternateLocation
+```
+
+**Expected**: Restore job completes with `Status = Completed`; managed disks appear in `$TargetRG` of `$TargetSub`.
+
+Verify:
+
+```powershell
+az disk list --resource-group $TargetRG --subscription $TargetSub `
+  --query "[].{name:name, sizeGb:diskSizeGb, state:diskState}" -o table
+```
+
+### 9.4 Cross-Subscription Azure Files Restore
+
+```powershell
+$sc   = Get-AzRecoveryServicesBackupContainer -ContainerType AzureStorage -VaultId $v.ID |
+            Where-Object { $_.FriendlyName -like "*$SAName*" }
+$item = Get-AzRecoveryServicesBackupItem -Container $sc -WorkloadType AzureFiles -VaultId $v.ID |
+            Where-Object { $_.FriendlyName -eq $Share }
+$rp   = Get-AzRecoveryServicesBackupRecoveryPoint -Item $item -VaultId $v.ID |
+            Sort-Object RecoveryPointTime -Descending | Select-Object -First 1
+
+Restore-AzRecoveryServicesBackupItem `
+  -RecoveryPoint                   $rp `
+  -TargetStorageAccountName        $TargetSA `
+  -TargetFileShareName             "restored-cross-sub" `
+  -TargetFolder                    "from-backup" `
+  -ResolveConflict                 Overwrite `
+  -SourceFilePath                  "testdata/seed-file.txt" `
+  -SourceFileType                  File `
+  -StorageAccountName              $SAName `
+  -StorageAccountResourceGroupName $RG `
+  -VaultId                         $v.ID
+```
+
+**Expected**: Job completes; `restored-cross-sub/from-backup/seed-file.txt` exists in `$TargetSA` within `$TargetSub`.
+
+Verify:
+
+```powershell
+az storage file list `
+  --account-name $TargetSA --share-name "restored-cross-sub" `
+  --path "from-backup" --subscription $TargetSub -o table
+```
+
+### 9.5 Cross-Subscription SQL Restore
+
+```powershell
+# Get latest SQL recovery point for CCCTestDB
+$sqlItem = Get-AzRecoveryServicesBackupItem `
+  -WorkloadType SQLDataBase -BackupManagementType AzureWorkload -VaultId $v.ID |
+  Where-Object { $_.FriendlyName -eq "CCCTestDB" }
+$sqlRPs = Get-AzRecoveryServicesBackupRecoveryPoint -Item $sqlItem -VaultId $v.ID
+$rp     = $sqlRPs | Sort-Object RecoveryPointTime -Descending | Select-Object -First 1
+
+# Build restore config — alternate location restore into a SQL instance on the TARGET sub
+# Requires a SQL VM registered in the target subscription's vault (or same-sub alternate instance)
+$targetSQLVM = az vm show -g $TargetRG -n "<target-sql-vm-name>" --subscription $TargetSub --query id -o tsv
+
+$restoreCfg = Get-AzRecoveryServicesBackupWorkloadRecoveryConfig `
+  -RecoveryPoint          $rp `
+  -TargetItem             $sqlItem `
+  -AlternateWorkloadRestore `
+  -VaultId                $v.ID
+
+$restoreCfg.RestoredDBName            = "CCCTestDB_CrossSub"
+$restoreCfg.OverwriteWLIfpresent      = $true
+$restoreCfg.TargetVirtualMachineId    = $targetSQLVM
+
+$job = Restore-AzRecoveryServicesBackupItem -WLRecoveryConfig $restoreCfg -VaultId $v.ID
+Wait-AzRecoveryServicesBackupJob -Job $job -Timeout 3600 -VaultId $v.ID
+$job | Select-Object Operation, Status, StartTime, EndTime
+```
+
+**Expected**: `Status = Completed`; `CCCTestDB_CrossSub` appears on the target SQL instance.
+
+> **Note**: SQL cross-subscription restore requires the target SQL VM to be registered as an `AzureVMAppContainer` in a vault within `$TargetSub`. In a single-subscription lab, point `$targetSQLVM` at a second SQL VM in the same subscription.
+
+### 9.6 Clean Up Restore Target
+
+```powershell
+az account set --subscription $TargetSub
+az group delete --name $TargetRG --yes --no-wait
+az account set --subscription $Sub
+```
+
+---
+
+## 10. Consolidated Pass / Fail Criteria
+
+| Phase | Test | Pass Condition |
+|-------|------|---------------|
+| VM backup | On-demand backup | Job `Status = Completed`, ≥1 recovery point |
+| VM backup | File-level restore | `/opt/ccc-testdata/sample.txt` accessible with correct content |
+| Azure Files | On-demand backup | Job `Status = Completed`, ≥1 recovery point |
+| Azure Files | File restore | `restored/seed-file.txt` present with matching content |
+| SQL | On-demand full backup | Job `Status = Completed`, ≥1 `Full` recovery point |
+| SQL | Database restore | `CCCTestDB_Restored` exists with 50 rows |
+| CSR | Vault CSR enabled | REST query returns `Enabled` |
+| CSR | VM cross-sub restore | Managed disks present in `$TargetRG` / `$TargetSub` |
+| CSR | Files cross-sub restore | `seed-file.txt` present in target share with matching content |
+| CSR | SQL cross-sub restore | `CCCTestDB_CrossSub` on target instance with 50 rows |
+| Alerts | Failed backup job | Email received within 30 min |
+| Alerts | Backup health event | Email received within 15 min |
+| Alerts | Vault delete attempt | Email received within 5 min |
+| Alerts | Security PIN retrieval | Email received within 5 min |

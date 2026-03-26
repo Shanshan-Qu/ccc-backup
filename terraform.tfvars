@@ -59,6 +59,11 @@ alert_email_receivers_security = [
   "shanshanqu@microsoft.com",
 ]
 
+# ── Cross-Subscription Restore ───────────────────────────────
+# Set to a second subscription ID to test true cross-subscription restore.
+# Leave empty to fall back to the same subscription (alternate resource group).
+restore_target_subscription_id = ""
+
 # ── Tags ─────────────────────────────────────────────────────
 tags = {
   cost_centre = "TODO"
