@@ -1,6 +1,14 @@
 locals {
   region_code = "nzn" # New Zealand North
 
+  # Abbreviated environment label (max 3 chars) used where name-length is tight,
+  # e.g. storage account names (24-char limit) and Windows computer names (15-char limit).
+  env_short = substr(var.environment, 0, 3)
+
+  # Windows NetBIOS computer name: max 15 chars.
+  # "ccc-sql-nzn-tst" = 15 chars for environment="test".
+  sql_computer_name = "ccc-sql-${local.region_code}-${local.env_short}"
+
   resource_group_name = "rg-rsv-backup-${local.region_code}"
   vault_name          = "rsv-ccc-${var.workload}-${local.region_code}-${var.environment}"
   law_name            = "law-ccc-${var.workload}-${local.region_code}-${var.environment}"

@@ -1,5 +1,5 @@
 resource "random_string" "storage_suffix" {
-  length  = 8
+  length  = 5 # combined with stccc+region+env prefix gives a unique, recognisable name within 24 chars
   special = false
   upper   = false
   numeric = true

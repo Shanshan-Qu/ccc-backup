@@ -74,7 +74,7 @@ module "sql_vm" {
   location            = var.location
   os_type             = "Windows"
   sku_size            = "Standard_D4s_v5"
-  computer_name       = "ccc-sql-nzn01"
+  computer_name       = local.sql_computer_name # e.g. "ccc-sql-nzn-tst" — within Windows 15-char NetBIOS limit
   tags                = local.tags
 
   zone = null

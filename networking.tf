@@ -58,7 +58,7 @@ module "workload_vnet" {
 
   subnets = {
     workload = {
-      name             = "snet-workload-${local.region_code}"
+      name             = "snet-workload-${local.region_code}-${var.environment}"
       address_prefixes = ["10.100.1.0/24"]
       network_security_group = {
         id = module.workload_nsg.resource_id
