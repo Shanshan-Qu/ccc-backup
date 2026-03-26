@@ -1,0 +1,57 @@
+[
+  {
+    "TestCase": "TC001",
+    "Status": "PASS",
+    "Detail": "(prev run) (prev run) (prev run) (prev run) (prev run) (prev run) Test file uploaded to ccc-test-share/backup-test/"
+  },
+  {
+    "TestCase": "TC002-SQL-Seed",
+    "Status": "PASS",
+    "Detail": "(prev run) (prev run) (prev run) (prev run) (prev run) (prev run) (prev run) CCCTestDB created and seeded. Output: (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected)  (1 rows affected) TotalRows   -----------          55  (1 rows affected)"
+  },
+  {
+    "TestCase": "TC002",
+    "Status": "PASS",
+    "Detail": "(prev run) (prev run) (prev run) (prev run) (prev run) (prev run) (prev run) On-demand backup job started (Job ID: 4a6128b8-7f4a-4189-9baa-557d9048f973)"
+  },
+  {
+    "TestCase": "TC003",
+    "Status": "PASS",
+    "Detail": "(prev run) (prev run) (prev run) (prev run) (prev run) (prev run) (prev run) On-demand VM backup job started (Job ID: e3c6d804-62cf-49f6-9150-b48eb3cb0f92)"
+  },
+  {
+    "TestCase": "TC004",
+    "Status": "PASS",
+    "Detail": "(prev run) (prev run) (prev run) (prev run) (prev run) (prev run) (prev run) FileShare completed in 00:00:02.8823151."
+  },
+  {
+    "TestCase": "TC005",
+    "Status": "PASS",
+    "Detail": "(prev run) (prev run) (prev run) (prev run) (prev run) (prev run) (prev run) VM completed in 00:28:16.6345294."
+  },
+  {
+    "TestCase": "TC006-SQL",
+    "Status": "PASS",
+    "Detail": "SQL full backup triggered – Job ID: d0088058-a081-45a8-8e6f-3d5101d93e35"
+  },
+  {
+    "TestCase": "TC007-SQL",
+    "Status": "PASS",
+    "Detail": "SQLFullBackup completed in 00:02:01.3846239."
+  },
+  {
+    "TestCase": "TC006",
+    "Status": "PASS",
+    "Detail": "(prev run) (prev run) (prev run) (prev run) (prev run) (prev run) (prev run) File share has 3 recovery point(s). Latest: 03/26/2026 08:40:56"
+  },
+  {
+    "TestCase": "TC007",
+    "Status": "PASS",
+    "Detail": "(prev run) (prev run) (prev run) (prev run) (prev run) (prev run) (prev run) VM has 3 recovery point(s). Latest: 03/26/2026 08:41:07"
+  },
+  {
+    "TestCase": "TC008",
+    "Status": "PASS",
+    "Detail": "CCCTestDB has 1 recovery point(s). Latest: 03/26/2026 10:20:46"
+  }
+]
