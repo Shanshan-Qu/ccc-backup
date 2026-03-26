@@ -15,7 +15,13 @@ module "files_storage" {
   account_kind                    = "StorageV2"
   allow_nested_items_to_be_public = false
   shared_access_key_enabled       = true  # shared-key constraint lifted on this subscription
-  tags                            = local.tags
+  public_network_access_enabled   = true  # allow test script uploads from client machine
+  # Allow all public traffic so test scripts can upload files; AzureBackup RBAC enforces access
+  network_rules = {
+    default_action = "Allow"
+    bypass         = ["AzureServices"]
+  }
+  tags = local.tags
 
   role_assignments = {
     vault_backup_contributor = {
