@@ -116,7 +116,19 @@ This satisfies the build spec requirement of `public_network_access_enabled = fa
 
 #### General VM Internet — NAT Gateway
 
-The Standard NAT Gateway (`ng-workload-nzn-test`) on the workload subnet provides outbound internet for OS-level operations (Windows Update, package managers, Entra ID token acquisition). The NSG allows only `AzureBackup`, `Storage`, and `AzureActiveDirectory` service tag destinations on port 443.
+The Standard NAT Gateway (`ng-workload-nzn-test`) on the workload subnet provides outbound internet for OS-level operations. Even though all backup *data* flows over the Microsoft backbone via the private endpoint, the VMs still require outbound internet access for traffic that has no private endpoint equivalent:
+
+| Traffic | Destination | Why no private endpoint? |
+|---|---|---|
+| TLS certificate revocation (CRL/OCSP) | `crl.microsoft.com`, `ocsp.digicert.com`, `crl3/4.digicert.com` | Public CRL endpoints — not routable privately. The Backup agent and SQL IaaS extension validate TLS certificates on every connection. |
+| Azure VM extension installation | `download.microsoft.com` (Microsoft CDN) | Extension packages (`MicrosoftAzureRecoveryServices`, `SqlIaasExtension`, `VMSnapshot`) are pulled from a public CDN at provisioning time. |
+| Azure Backup agent heartbeat & registration | `*.backup.windowsazure.com` | The vault private endpoint covers backup/restore data transfer, but the Backup extension's initial agent registration and periodic heartbeat still use public service endpoints. |
+| SQL IaaS Extension agent | `*.agentsvc.azure-automation.net`, `*.ods.opinsights.azure.com` | SQL VM management traffic sent by `SqlIaasExtension`; these endpoints do not have private endpoint support in all regions. |
+| Windows Update / OS patching | `windowsupdate.microsoft.com` and Microsoft CDN | Required for automated OS patching (observed in activity log). |
+
+The NSG on the workload subnet restricts the permitted destinations to the `AzureBackup`, `Storage`, and `AzureActiveDirectory` service tags on port 443 only, limiting the blast radius of the outbound path.
+
+> **Production hardening:** Replace the NAT gateway with an **Azure Firewall** (or equivalent NVA) with explicit FQDN allow-rules for the endpoints above. This gives full L7 visibility and prevents any unexpected outbound traffic.
 
 #### Required Deployment Order
 
