@@ -92,22 +92,25 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "storage_per_item" {
   resource_group_name = module.resource_group.name
   tags                = local.tags
 
-  description = "Fires when a single backup item's consumed storage exceeds the threshold."
+  description = "Fires when a single backup item's consumed storage exceeds 500 GB."
   severity    = 2  # Sev2 – Warning
 
   scopes = [module.log_analytics_workspace.resource_id]
 
-  evaluation_frequency = "P1D"
-  window_duration      = "P1D"
-  auto_mitigation_enabled = false
+  evaluation_frequency    = "P1D"
+  window_duration         = "P1D"
+  auto_mitigation_enabled = true
 
   criteria {
-    # Fires when any item's storage exceeds 500 GB (512000 MB)
+    # Summarise to the latest storage value per item, then filter.
+    # Using summarize+where (rather than a bare row filter) means the alert
+    # auto-resolves when no items exceed the threshold any more.
     query = <<-KQL
-      union isfuzzy=true (AddonAzureBackupStorage
+      AddonAzureBackupStorage
       | where TimeGenerated > ago(1d)
-      | where StorageConsumedInMBs > 512000)
-      | count
+      | summarize StorageConsumedInMBs = max(StorageConsumedInMBs)
+          by BackupItemUniqueId, BackupItemFriendlyName, VaultName
+      | where StorageConsumedInMBs > 512000
     KQL
 
     time_aggregation_method = "Count"
@@ -136,17 +139,19 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "storage_total" {
 
   scopes = [module.log_analytics_workspace.resource_id]
 
-  evaluation_frequency = "P1D"
-  window_duration      = "P1D"
-  auto_mitigation_enabled = false
+  evaluation_frequency    = "P1D"
+  window_duration         = "P1D"
+  auto_mitigation_enabled = true
 
   criteria {
-    # Fires when total vault storage exceeds 1 TB (1048576 MB)
+    # Sum storage across all backup items in the vault, then compare to 1 TB.
+    # Previously the query filtered individual rows above 1 TB (same shape as
+    # storage-per-item). This corrected query aggregates across all items first.
     query = <<-KQL
-      union isfuzzy=true (AddonAzureBackupStorage
+      AddonAzureBackupStorage
       | where TimeGenerated > ago(1d)
-      | where StorageConsumedInMBs > 1048576)
-      | count
+      | summarize TotalStorageMBs = sum(StorageConsumedInMBs) by VaultName
+      | where TotalStorageMBs > 1048576
     KQL
 
     time_aggregation_method = "Count"
